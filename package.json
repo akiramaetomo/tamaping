@@ -1,0 +1,21 @@
+{
+  "name": "dotping-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:lan": "vite --host 0.0.0.0",
+    "build": "tsc && vite build",
+    "build:pages": "tsc && vite build --base /tamaping/",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@dimforge/rapier2d-compat": "^0.14.0",
+    "pixi.js": "^8.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vite": "^8.0.16"
+  }
+}
