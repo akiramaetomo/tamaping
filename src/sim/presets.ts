@@ -1,23 +1,68 @@
-import { DEFAULT_SETTINGS, type BallPalette, type DotpingSettings } from './settings';
+import {
+  DEFAULT_SETTINGS,
+  type AudioWaveform,
+  type BallPalette,
+  type DotpingSettings,
+  type ParticlePalette,
+} from './settings';
+import {
+  FACTORY_PRESET_DEFINITION_DATA,
+  type FactoryPresetInitialFormation,
+} from './factoryPresetData';
 
-export const FACTORY_PRESET_COUNT = 10;
-export const USER_PRESET_COUNT = 20;
-export const PRESET_EXPORT_SCHEMA_VERSION = 1;
+export type { FactoryPresetInitialFormation } from './factoryPresetData';
+
+export const FACTORY_PRESET_COUNT = 30;
+export const USER_PRESET_COUNT = 30;
+export const PRESET_EXPORT_SCHEMA_VERSION = 7;
 
 const USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v1';
 const EXPORT_KIND = 'dotping-presets';
 const BALL_PALETTES: readonly BallPalette[] = [
-  'black-hole',
-  'calm-blue',
-  'solar-yellow',
-  'red-core',
-  'pink-glow',
-  'white-star',
+  'black',
+  'blue',
+  'green',
+  'yellow',
+  'red',
+  'pink',
+  'orange',
+  'white',
+];
+const PARTICLE_PALETTES: readonly ParticlePalette[] = [
+  'blue',
+  'green',
+  'yellow',
+  'red',
+  'pink',
+  'orange',
+  'white',
+  'pastel',
+  'colorful',
 ];
 const CONTROL_BALL_RADIUS_MIN = 2;
 const CONTROL_BALL_RADIUS_MAX = 200;
+const PARTICLE_RADIUS_MIN = 2;
+const PARTICLE_RADIUS_MAX = 100;
+const PARTICLE_COUNT_MIN = 0;
+const PARTICLE_COUNT_MAX = 10000;
+const PARTICLE_RIM_WIDTH_MIN = 5;
+const PARTICLE_RIM_WIDTH_MAX = 100;
+const LINEAR_DAMPING_MIN = 0;
+const LINEAR_DAMPING_MAX = 100;
+const GRAVITY_STRENGTH_MIN = 0.01;
+const GRAVITY_STRENGTH_MAX = 100;
+const CONTROL_BALL_MASS_MIN = 0.1;
+const CONTROL_BALL_MASS_MAX = 1000;
+const PARTICLE_MASS_MIN = 0.01;
+const PARTICLE_MASS_MAX = 100;
+const AUDIO_FREQUENCY_MIN = 30;
+const AUDIO_FREQUENCY_MAX = 10000;
+const AUDIO_WAVEFORMS: readonly AudioWaveform[] = ['sine', 'triangle', 'sawtooth', 'square'];
+const PINNED_GROUPS = ['mode', 'ball', 'particles', 'interaction', 'audio'] as const;
 
-export type PresetSettings = Pick<
+export type PresetPinnedGroup = (typeof PINNED_GROUPS)[number] | null;
+
+type PresetTuningSettings = Pick<
   DotpingSettings,
   | 'collisionMode'
   | 'particlePalette'
@@ -26,7 +71,9 @@ export type PresetSettings = Pick<
   | 'gravityStrength'
   | 'particleCount'
   | 'particleRadius'
+  | 'particleMass'
   | 'particleLeaderVisible'
+  | 'particleRimWidth'
   | 'particleBrightnessResponse'
   | 'particleGlowMode'
   | 'particleGlowVividness'
@@ -41,19 +88,37 @@ export type PresetSettings = Pick<
   | 'controlBallFriction'
   | 'controlBallLinearDamping'
   | 'wallRestitution'
-  | 'audioFrequencyHz'
-  | 'audioFrequencySpread'
-  | 'audioDurationMs'
+  | 'audioBallWaveform'
+  | 'audioBallFrequencyHz'
+  | 'audioBallFrequencySpread'
+  | 'audioBallDurationMs'
+  | 'audioParticleWaveform'
+  | 'audioParticleFrequencyHz'
+  | 'audioParticleFrequencySpread'
+  | 'audioParticleDurationMs'
 >;
+
+type LegacySharedAudioPresetSettings = {
+  audioFrequencyHz?: unknown;
+  audioFrequencySpread?: unknown;
+  audioDurationMs?: unknown;
+};
+
+export type PresetSettings = PresetTuningSettings & {
+  pinnedGroup?: PresetPinnedGroup;
+};
 
 export type FactoryPreset = {
   id: string;
   name: string;
+  formationLabel?: string;
+  initialFormation?: FactoryPresetInitialFormation;
   settings: PresetSettings;
 };
 
 export type UserPreset = {
   name: string;
+  formationLabel?: string;
   settings: PresetSettings;
 };
 
@@ -67,174 +132,43 @@ export type PresetExportFile = {
 
 const DEFAULT_PRESET = presetFromSettings(DEFAULT_SETTINGS);
 
-const FACTORY_PRESET_DEFINITIONS: FactoryPreset[] = [
-  {
-    id: 'factory-1',
-    name: '1. Hello Ping',
+function factoryPreset(
+  id: number,
+  name: string,
+  formationLabel: string | null,
+  initialFormation: FactoryPresetInitialFormation | null,
+  settings: Partial<PresetSettings>,
+): FactoryPreset {
+  return {
+    id: `factory-${id}`,
+    name,
+    ...(formationLabel ? { formationLabel } : {}),
+    ...(initialFormation ? { initialFormation } : {}),
     settings: {
       ...DEFAULT_PRESET,
-      particlePalette: 'colorful',
-      particleCount: 100,
-      particleRadius: 12,
-      controlBallRadius: 64,
-      controlBallMass: 200.0000000000001,
-      controlBallLinearDamping: 0.45630000000000004,
-      wallRestitution: 0.96,
+      ...settings,
     },
-  },
-  {
-    id: 'factory-2',
-    name: '2. Blue Ball',
-    settings: {
-      ...DEFAULT_PRESET,
-      particleCount: 30,
-      particleRadius: 25,
-      controlBallRadius: 60,
-    },
-  },
-  {
-    id: 'factory-3',
-    name: '3. Blue Sand Chaser',
-    settings: {
-      ...DEFAULT_PRESET,
-      gravityMode: 'gravity',
-      particleCount: 1000,
-      particleRadius: 2,
-      controlBallRadius: 60,
-    },
-  },
-  {
-    id: 'factory-4',
-    name: '4. Pink Sand Chaser',
-    settings: {
-      ...DEFAULT_PRESET,
-      particlePalette: 'pink',
-      gravityMode: 'gravity',
-      particleCount: 1000,
-      particleRadius: 2,
-      controlBallRadius: 50,
-      controlBallMass: 16.783951546061342,
-      wallRestitution: 0,
-    },
-  },
-  {
-    id: 'factory-5',
-    name: '5. Red Space',
-    settings: {
-      ...DEFAULT_PRESET,
-      particlePalette: 'red',
-      gravityMode: 'antigravity',
-      particleCount: 500,
-      particleRadius: 8,
-      contactRestitution: 0.84,
-      controlBallRadius: 50,
-      controlBallMass: 16.783951546061342,
-      wallRestitution: 0,
-    },
-  },
-  {
-    id: 'factory-6',
-    name: '6. Colorful Space',
-    settings: {
-      ...DEFAULT_PRESET,
-      particlePalette: 'colorful',
-      gravityMode: 'antigravity',
-      gravityStrength: 0.15,
-      particleCount: 1000,
-      particleRadius: 5,
-      contactRestitution: 0.84,
-      controlBallRadius: 30,
-      controlBallMass: 0.7552208629864727,
-      wallRestitution: 1,
-    },
-  },
-  {
-    id: 'factory-7',
-    name: '7. Colorful Strange Power',
-    settings: {
-      ...DEFAULT_PRESET,
-      particlePalette: 'colorful',
-      gravityMode: 'gravity',
-      gravityStrength: 1.95,
-      particleCount: 500,
-      particleRadius: 7,
-      contactRestitution: 0,
-      particleFriction: 0,
-      particleLinearDamping: 3,
-      controlBallRadius: 50,
-      controlBallMass: 2.188860974544065,
-      controlBallFriction: 0,
-      controlBallLinearDamping: 0,
-      wallRestitution: 1,
-    },
-  },
-  {
-    id: 'factory-8',
-    name: '8. Playing with snakes',
-    settings: {
-      ...DEFAULT_PRESET,
-      collisionMode: 'independence-overlapping',
-      particlePalette: 'colorful',
-      dotCombiMode: 'velocity',
-      gravityStrength: 1.75,
-      particleCount: 100,
-      particleRadius: 18,
-      contactRestitution: 1,
-      particleFriction: 0,
-      particleLinearDamping: 0,
-      controlBallRadius: 88,
-      controlBallMass: 0.6687403049764221,
-      controlBallFriction: 0,
-      controlBallLinearDamping: 0,
-      wallRestitution: 0.91,
-    },
-  },
-  {
-    id: 'factory-9',
-    name: '9. Snakes playing',
-    settings: {
-      ...DEFAULT_PRESET,
-      collisionMode: 'independence-overlapping',
-      particlePalette: 'colorful',
-      dotCombiMode: 'velocity',
-      gravityMode: 'gravity',
-      gravityStrength: 1.1,
-      particleCount: 100,
-      particleRadius: 26,
-      contactRestitution: 1,
-      particleFriction: 0,
-      particleLinearDamping: 0,
-      controlBallRadius: 72,
-      controlBallMass: 0.10000000000000002,
-      controlBallFriction: 0,
-      controlBallLinearDamping: 0,
-      wallRestitution: 1,
-    },
-  },
-  {
-    id: 'factory-10',
-    name: '10. Sparse Bounce',
-    settings: {
-      ...DEFAULT_PRESET,
-      particlePalette: 'pastel',
-      particleCount: 100,
-      particleRadius: 14,
-      contactRestitution: 0.88,
-      particleFriction: 0,
-      particleLinearDamping: 0,
-      controlBallRadius: 58,
-      controlBallMass: 120,
-      controlBallFriction: 0,
-      controlBallLinearDamping: 0,
-      wallRestitution: 0.92,
-    },
-  },
-];
+  };
+}
+
+const FACTORY_PRESET_DEFINITIONS: FactoryPreset[] = FACTORY_PRESET_DEFINITION_DATA.map(
+  (preset, index) => factoryPreset(
+    index + 1,
+    preset.name,
+    preset.formationLabel ?? null,
+    preset.initialFormation ?? null,
+    preset.settings,
+  ),
+);
 
 export const FACTORY_PRESETS = FACTORY_PRESET_DEFINITIONS.slice(0, FACTORY_PRESET_COUNT);
 
-export function presetFromSettings(settings: DotpingSettings): PresetSettings {
+export function presetFromSettings(
+  settings: DotpingSettings,
+  pinnedGroup: PresetPinnedGroup = null,
+): PresetSettings {
   return {
+    pinnedGroup,
     collisionMode: settings.collisionMode,
     particlePalette: settings.particlePalette,
     dotCombiMode: settings.dotCombiMode,
@@ -242,7 +176,9 @@ export function presetFromSettings(settings: DotpingSettings): PresetSettings {
     gravityStrength: settings.gravityStrength,
     particleCount: settings.particleCount,
     particleRadius: settings.particleRadius,
+    particleMass: settings.particleMass,
     particleLeaderVisible: settings.particleLeaderVisible,
+    particleRimWidth: settings.particleRimWidth,
     particleBrightnessResponse: settings.particleBrightnessResponse,
     particleGlowMode: settings.particleGlowMode,
     particleGlowVividness: settings.particleGlowVividness,
@@ -257,9 +193,14 @@ export function presetFromSettings(settings: DotpingSettings): PresetSettings {
     controlBallFriction: settings.controlBallFriction,
     controlBallLinearDamping: settings.controlBallLinearDamping,
     wallRestitution: settings.wallRestitution,
-    audioFrequencyHz: settings.audioFrequencyHz,
-    audioFrequencySpread: settings.audioFrequencySpread,
-    audioDurationMs: settings.audioDurationMs,
+    audioBallWaveform: settings.audioBallWaveform,
+    audioBallFrequencyHz: settings.audioBallFrequencyHz,
+    audioBallFrequencySpread: settings.audioBallFrequencySpread,
+    audioBallDurationMs: settings.audioBallDurationMs,
+    audioParticleWaveform: settings.audioParticleWaveform,
+    audioParticleFrequencyHz: settings.audioParticleFrequencyHz,
+    audioParticleFrequencySpread: settings.audioParticleFrequencySpread,
+    audioParticleDurationMs: settings.audioParticleDurationMs,
   };
 }
 
@@ -287,12 +228,25 @@ export function saveUserPreset(
   index: number,
   name: string,
   settings: PresetSettings,
+  formationLabel?: string | null,
 ) {
   const next = copyUserPresetSlots(presets);
+  const label = sanitizeFormationLabel(formationLabel);
   next[index] = {
     name: sanitizePresetName(name, index),
+    ...(label ? { formationLabel: label } : {}),
     settings: normalizePresetSettings(settings),
   };
+  writeUserPresetStorage(next);
+  return next;
+}
+
+export function deleteUserPreset(
+  presets: Array<UserPreset | null>,
+  index: number,
+) {
+  const next = copyUserPresetSlots(presets);
+  next[index] = null;
   writeUserPresetStorage(next);
   return next;
 }
@@ -317,8 +271,10 @@ export function importUserPresets(
       overwriteOffset += 1;
     }
 
+    const formationLabel = sanitizeFormationLabel(preset.formationLabel);
     next[target] = {
       name: sanitizePresetName(preset.name, target),
+      ...(formationLabel ? { formationLabel } : {}),
       settings: normalizePresetSettings(preset.settings),
     };
     imported += 1;
@@ -344,11 +300,15 @@ export function parsePresetExport(jsonText: string): UserPreset[] {
 export function createCurrentPresetExport(
   name: string,
   settings: DotpingSettings,
+  pinnedGroup: PresetPinnedGroup = null,
+  formationLabel?: string | null,
 ): PresetExportFile {
+  const label = sanitizeFormationLabel(formationLabel);
   return createPresetExport('current', [
     {
       name: name.trim() || 'Current',
-      settings: presetFromSettings(settings),
+      ...(label ? { formationLabel: label } : {}),
+      settings: presetFromSettings(settings, pinnedGroup),
     },
   ]);
 }
@@ -371,10 +331,14 @@ function createPresetExport(
     schemaVersion: PRESET_EXPORT_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
     source,
-    presets: presets.map((preset, index) => ({
-      name: sanitizePresetName(preset.name, index),
-      settings: normalizePresetSettings(preset.settings),
-    })),
+    presets: presets.map((preset, index) => {
+      const formationLabel = sanitizeFormationLabel(preset.formationLabel);
+      return {
+        name: sanitizePresetName(preset.name, index),
+        ...(formationLabel ? { formationLabel } : {}),
+        settings: normalizePresetSettings(preset.settings),
+      };
+    }),
   };
 }
 
@@ -429,33 +393,82 @@ function normalizeUserPreset(value: unknown, index = 0): UserPreset | null {
   }
 
   const settings = normalizePresetSettings(candidate.settings);
+  const formationLabel = sanitizeFormationLabel(candidate.formationLabel);
   return {
     name: sanitizePresetName(candidate.name, index),
+    ...(formationLabel ? { formationLabel } : {}),
     settings,
   };
 }
 
 function normalizePresetSettings(value: unknown): PresetSettings {
-  const source = value && typeof value === 'object' ? (value as Partial<PresetSettings>) : {};
+  const source = value && typeof value === 'object'
+    ? (value as Partial<PresetSettings> & LegacySharedAudioPresetSettings)
+    : {};
   const base = DEFAULT_PRESET;
+  const legacyFrequencyHz = finiteNumberInRange(
+    source.audioFrequencyHz,
+    base.audioBallFrequencyHz,
+    AUDIO_FREQUENCY_MIN,
+    AUDIO_FREQUENCY_MAX,
+  );
+  const legacyFrequencySpread = finiteNumberInRange(
+    source.audioFrequencySpread,
+    base.audioBallFrequencySpread,
+    1,
+    2,
+  );
+  const legacyDurationMs = finiteNumberInRange(
+    source.audioDurationMs,
+    base.audioBallDurationMs,
+    1,
+    1000,
+  );
 
-  return {
+  const normalized: PresetSettings = {
     collisionMode: source.collisionMode === 'independence-overlapping'
       ? 'independence-overlapping'
       : source.collisionMode === 'collision-physical'
         ? 'collision-physical'
         : base.collisionMode,
-    particlePalette: oneOf(source.particlePalette, ['blue', 'red', 'pastel', 'colorful', 'pink'])
+    particlePalette: oneOf(source.particlePalette, PARTICLE_PALETTES)
       ?? base.particlePalette,
     dotCombiMode: oneOf(source.dotCombiMode, ['off', 'velocity']) ?? base.dotCombiMode,
     gravityMode: oneOf(source.gravityMode, ['none', 'gravity', 'antigravity'])
       ?? base.gravityMode,
-    gravityStrength: finiteNumber(source.gravityStrength, base.gravityStrength),
-    particleCount: finiteNumber(source.particleCount, base.particleCount),
-    particleRadius: finiteNumber(source.particleRadius, base.particleRadius),
+    gravityStrength: finiteNumberInRange(
+      source.gravityStrength,
+      base.gravityStrength,
+      GRAVITY_STRENGTH_MIN,
+      GRAVITY_STRENGTH_MAX,
+    ),
+    particleCount: finiteNumberInRange(
+      source.particleCount,
+      base.particleCount,
+      PARTICLE_COUNT_MIN,
+      PARTICLE_COUNT_MAX,
+    ),
+    particleRadius: finiteNumberInRange(
+      source.particleRadius,
+      base.particleRadius,
+      PARTICLE_RADIUS_MIN,
+      PARTICLE_RADIUS_MAX,
+    ),
+    particleMass: finiteNumberInRange(
+      source.particleMass,
+      base.particleMass,
+      PARTICLE_MASS_MIN,
+      PARTICLE_MASS_MAX,
+    ),
     particleLeaderVisible: booleanValue(
       source.particleLeaderVisible,
       base.particleLeaderVisible,
+    ),
+    particleRimWidth: finiteNumberInRange(
+      source.particleRimWidth,
+      base.particleRimWidth,
+      PARTICLE_RIM_WIDTH_MIN,
+      PARTICLE_RIM_WIDTH_MAX,
     ),
     particleBrightnessResponse: finiteNumberInRange(
       source.particleBrightnessResponse,
@@ -480,11 +493,13 @@ function normalizePresetSettings(value: unknown): PresetSettings {
     ),
     contactRestitution: finiteNumber(source.contactRestitution, base.contactRestitution),
     particleFriction: finiteNumber(source.particleFriction, base.particleFriction),
-    particleLinearDamping: finiteNumber(
+    particleLinearDamping: finiteNumberInRange(
       source.particleLinearDamping,
       base.particleLinearDamping,
+      LINEAR_DAMPING_MIN,
+      LINEAR_DAMPING_MAX,
     ),
-    controlBallPalette: oneOf(source.controlBallPalette, BALL_PALETTES)
+    controlBallPalette: normalizeBallPalette(source.controlBallPalette)
       ?? base.controlBallPalette,
     controlBallRimEnabled: booleanValue(
       source.controlBallRimEnabled,
@@ -498,17 +513,67 @@ function normalizePresetSettings(value: unknown): PresetSettings {
       CONTROL_BALL_RADIUS_MIN,
       CONTROL_BALL_RADIUS_MAX,
     ),
-    controlBallMass: finiteNumber(source.controlBallMass, base.controlBallMass),
+    controlBallMass: finiteNumberInRange(
+      source.controlBallMass,
+      base.controlBallMass,
+      CONTROL_BALL_MASS_MIN,
+      CONTROL_BALL_MASS_MAX,
+    ),
     controlBallFriction: finiteNumber(source.controlBallFriction, base.controlBallFriction),
-    controlBallLinearDamping: finiteNumber(
+    controlBallLinearDamping: finiteNumberInRange(
       source.controlBallLinearDamping,
       base.controlBallLinearDamping,
+      LINEAR_DAMPING_MIN,
+      LINEAR_DAMPING_MAX,
     ),
     wallRestitution: finiteNumber(source.wallRestitution, base.wallRestitution),
-    audioFrequencyHz: finiteNumber(source.audioFrequencyHz, base.audioFrequencyHz),
-    audioFrequencySpread: finiteNumber(source.audioFrequencySpread, base.audioFrequencySpread),
-    audioDurationMs: finiteNumber(source.audioDurationMs, base.audioDurationMs),
+    audioBallWaveform: oneOf(source.audioBallWaveform, AUDIO_WAVEFORMS)
+      ?? base.audioBallWaveform,
+    audioBallFrequencyHz: finiteNumberInRange(
+      source.audioBallFrequencyHz,
+      legacyFrequencyHz,
+      AUDIO_FREQUENCY_MIN,
+      AUDIO_FREQUENCY_MAX,
+    ),
+    audioBallFrequencySpread: finiteNumberInRange(
+      source.audioBallFrequencySpread,
+      legacyFrequencySpread,
+      1,
+      2,
+    ),
+    audioBallDurationMs: finiteNumberInRange(
+      source.audioBallDurationMs,
+      legacyDurationMs,
+      1,
+      1000,
+    ),
+    audioParticleWaveform: oneOf(source.audioParticleWaveform, AUDIO_WAVEFORMS)
+      ?? base.audioParticleWaveform,
+    audioParticleFrequencyHz: finiteNumberInRange(
+      source.audioParticleFrequencyHz,
+      legacyFrequencyHz,
+      AUDIO_FREQUENCY_MIN,
+      AUDIO_FREQUENCY_MAX,
+    ),
+    audioParticleFrequencySpread: finiteNumberInRange(
+      source.audioParticleFrequencySpread,
+      legacyFrequencySpread,
+      1,
+      2,
+    ),
+    audioParticleDurationMs: finiteNumberInRange(
+      source.audioParticleDurationMs,
+      legacyDurationMs,
+      1,
+      1000,
+    ),
   };
+
+  if (Object.prototype.hasOwnProperty.call(source, 'pinnedGroup')) {
+    normalized.pinnedGroup = pinnedGroupValue(source.pinnedGroup);
+  }
+
+  return normalized;
 }
 
 function sanitizePresetName(name: unknown, index: number) {
@@ -520,12 +585,51 @@ function sanitizePresetName(name: unknown, index: number) {
   return trimmed ? trimmed.slice(0, 40) : `User ${index + 1}`;
 }
 
+function sanitizeFormationLabel(label: unknown) {
+  if (typeof label !== 'string') {
+    return null;
+  }
+
+  const trimmed = label.trim();
+  return trimmed ? trimmed.slice(0, 40) : null;
+}
+
 function oneOf<T extends string>(value: unknown, choices: readonly T[]) {
   return choices.includes(value as T) ? (value as T) : null;
 }
 
+function normalizeBallPalette(value: unknown): BallPalette | null {
+  const direct = oneOf(value, BALL_PALETTES);
+  if (direct) {
+    return direct;
+  }
+
+  switch (value) {
+    case 'black-hole':
+      return 'black';
+    case 'calm-blue':
+      return 'blue';
+    case 'solar-yellow':
+      return 'yellow';
+    case 'red-core':
+      return 'red';
+    case 'pink-glow':
+      return 'pink';
+    case 'white-star':
+      return 'white';
+    default:
+      return null;
+  }
+}
+
 function booleanValue(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function pinnedGroupValue(value: unknown): PresetPinnedGroup {
+  return value === null || PINNED_GROUPS.includes(value as (typeof PINNED_GROUPS)[number])
+    ? (value as PresetPinnedGroup)
+    : null;
 }
 
 function finiteNumber(value: unknown, fallback: number) {

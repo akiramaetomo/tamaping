@@ -1,5 +1,14 @@
 export type CollisionMode = 'independence-overlapping' | 'collision-physical';
-export type ParticlePalette = 'blue' | 'red' | 'pastel' | 'colorful' | 'pink';
+export type ParticlePalette =
+  | 'blue'
+  | 'green'
+  | 'yellow'
+  | 'red'
+  | 'pink'
+  | 'orange'
+  | 'white'
+  | 'pastel'
+  | 'colorful';
 export type ParticleGlowMode =
   | 'gold'
   | 'white'
@@ -9,16 +18,19 @@ export type ParticleGlowMode =
   | 'green'
   | 'rainbow';
 export type BallPalette =
-  | 'black-hole'
-  | 'calm-blue'
-  | 'solar-yellow'
-  | 'red-core'
-  | 'pink-glow'
-  | 'white-star';
+  | 'black'
+  | 'blue'
+  | 'green'
+  | 'yellow'
+  | 'red'
+  | 'pink'
+  | 'orange'
+  | 'white';
 export type ControlBallMode = 'persistent' | 'touch';
 export type DotCombiMode = 'off' | 'velocity';
 export type GravityMode = 'none' | 'gravity' | 'antigravity';
 export type ColliderLayout = 'split' | 'single';
+export type AudioWaveform = 'sine' | 'triangle' | 'sawtooth' | 'square';
 
 export type DotpingSettings = {
   collisionMode: CollisionMode;
@@ -30,6 +42,7 @@ export type DotpingSettings = {
   particleRadius: number;
   particleMass: number;
   particleLeaderVisible: boolean;
+  particleRimWidth: number;
   particleBrightnessResponse: number;
   particleGlowMode: ParticleGlowMode;
   particleGlowVividness: number;
@@ -49,9 +62,14 @@ export type DotpingSettings = {
   rapierLengthUnit: number;
   colliderLayout: ColliderLayout;
   soundEnabled: boolean;
-  audioFrequencyHz: number;
-  audioFrequencySpread: number;
-  audioDurationMs: number;
+  audioBallWaveform: AudioWaveform;
+  audioBallFrequencyHz: number;
+  audioBallFrequencySpread: number;
+  audioBallDurationMs: number;
+  audioParticleWaveform: AudioWaveform;
+  audioParticleFrequencyHz: number;
+  audioParticleFrequencySpread: number;
+  audioParticleDurationMs: number;
   debug: boolean;
 };
 
@@ -65,13 +83,14 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   particleRadius: 8,
   particleMass: 0.15,
   particleLeaderVisible: false,
+  particleRimWidth: 100,
   particleBrightnessResponse: 10,
   particleGlowMode: 'gold',
   particleGlowVividness: 0.85,
   contactRestitution: 0.3,
   particleFriction: 0.02,
   particleLinearDamping: 0.01,
-  controlBallPalette: 'calm-blue',
+  controlBallPalette: 'blue',
   controlBallRimEnabled: true,
   controlBallMode: 'persistent',
   controlBallRadius: 52,
@@ -84,8 +103,13 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   rapierLengthUnit: 1,
   colliderLayout: 'split',
   soundEnabled: true,
-  audioFrequencyHz: 4000,
-  audioFrequencySpread: 1,
-  audioDurationMs: 150,
+  audioBallWaveform: 'triangle',
+  audioBallFrequencyHz: 4000,
+  audioBallFrequencySpread: 1,
+  audioBallDurationMs: 150,
+  audioParticleWaveform: 'sine',
+  audioParticleFrequencyHz: 4000,
+  audioParticleFrequencySpread: 1,
+  audioParticleDurationMs: 150,
   debug: false,
 };

@@ -17,6 +17,8 @@ type BallStyle = {
   centerAlpha: number;
 };
 
+const PARTICLE_RIM_ALPHA = 0.72;
+
 export class PixiRenderer {
   private readonly app = new Application();
   private readonly particles = new Graphics();
@@ -24,11 +26,12 @@ export class PixiRenderer {
   private readonly table = new Graphics();
   private particleBaseColors: number[] = [];
   private particlePalette: ParticlePalette = 'blue';
+  private particleRimWidthPercent = 20;
   private particleBrightnessResponse = 1;
   private particleGlowMode: ParticleGlowMode = 'gold';
   private particleGlowVividness = 0.85;
   private particleLeaderVisible = false;
-  private ballPalette: BallPalette = 'calm-blue';
+  private ballPalette: BallPalette = 'blue';
   private ballRimEnabled = true;
 
   constructor(private readonly root: HTMLElement) {}
@@ -83,6 +86,10 @@ export class PixiRenderer {
     this.particleBaseColors = [];
   }
 
+  setParticleRimWidth(width: number) {
+    this.particleRimWidthPercent = Math.max(5, Math.min(width, 100));
+  }
+
   setParticleBrightnessResponse(response: number) {
     this.particleBrightnessResponse = Math.max(0, Math.min(response, 100));
   }
@@ -125,7 +132,6 @@ export class PixiRenderer {
       const dot = snapshot.particles[index];
       const baseColor = this.particleBaseColors[index];
       let color = baseColor;
-      let alpha = 0.76;
 
       if (this.particleBrightnessResponse > 0) {
         color = speedColor(
@@ -136,7 +142,6 @@ export class PixiRenderer {
           this.particleGlowVividness,
           index,
         );
-        alpha += smoothstep(clamp01((dot.speed * this.particleBrightnessResponse) / 1800)) * 0.19;
       }
 
       if (this.particleLeaderVisible && index === 0) {
@@ -145,11 +150,33 @@ export class PixiRenderer {
           alpha: 0.18,
         });
         color = 0xf7fbff;
-        alpha = 0.96;
       }
 
-      this.particles.circle(dot.x, dot.y, dot.radius).fill({ color, alpha });
+      this.drawParticle(dot.x, dot.y, dot.radius, color, index === 0);
     }
+  }
+
+  private drawParticle(
+    x: number,
+    y: number,
+    radius: number,
+    color: number,
+    isLeader: boolean,
+  ) {
+    const rimAlpha = this.particleLeaderVisible && isLeader ? 0.94 : PARTICLE_RIM_ALPHA;
+    const rimWidth = radius * (this.particleRimWidthPercent / 100);
+
+    if (this.particleRimWidthPercent >= 100) {
+      this.particles.circle(x, y, radius).fill({ color, alpha: rimAlpha });
+      return;
+    }
+
+    const rimRadius = Math.max(radius - rimWidth / 2, 0.001);
+    this.particles.circle(x, y, rimRadius).stroke({
+      color,
+      width: rimWidth,
+      alpha: rimAlpha,
+    });
   }
 
   private drawControl(snapshot: WorldSnapshot) {
@@ -200,7 +227,7 @@ export class PixiRenderer {
 
 function ballStyle(palette: BallPalette): BallStyle {
   switch (palette) {
-    case 'black-hole':
+    case 'black':
       return {
         glow: 0x11182a,
         glowAlpha: 0.48,
@@ -215,7 +242,22 @@ function ballStyle(palette: BallPalette): BallStyle {
         center: 0x05070d,
         centerAlpha: 0.92,
       };
-    case 'solar-yellow':
+    case 'green':
+      return {
+        glow: 0x173d25,
+        glowAlpha: 0.3,
+        fill: 0x55c77a,
+        fillAlpha: 0.4,
+        highlight: 0xc5ffd6,
+        highlightAlpha: 0.21,
+        shade: 0x1e7a42,
+        shadeAlpha: 0.16,
+        stroke: 0x79e89a,
+        strokeAlpha: 0.88,
+        center: 0x3a9b58,
+        centerAlpha: 0.72,
+      };
+    case 'yellow':
       return {
         glow: 0x5b4310,
         glowAlpha: 0.28,
@@ -230,7 +272,7 @@ function ballStyle(palette: BallPalette): BallStyle {
         center: 0xd49524,
         centerAlpha: 0.7,
       };
-    case 'red-core':
+    case 'red':
       return {
         glow: 0x4d1114,
         glowAlpha: 0.3,
@@ -245,7 +287,7 @@ function ballStyle(palette: BallPalette): BallStyle {
         center: 0x9b2b31,
         centerAlpha: 0.72,
       };
-    case 'pink-glow':
+    case 'pink':
       return {
         glow: 0x552144,
         glowAlpha: 0.3,
@@ -260,7 +302,22 @@ function ballStyle(palette: BallPalette): BallStyle {
         center: 0xbd4b8f,
         centerAlpha: 0.72,
       };
-    case 'white-star':
+    case 'orange':
+      return {
+        glow: 0x60300d,
+        glowAlpha: 0.3,
+        fill: 0xff8a33,
+        fillAlpha: 0.41,
+        highlight: 0xffd2a3,
+        highlightAlpha: 0.22,
+        shade: 0xaf4d16,
+        shadeAlpha: 0.16,
+        stroke: 0xffaa57,
+        strokeAlpha: 0.9,
+        center: 0xc76424,
+        centerAlpha: 0.72,
+      };
+    case 'white':
       return {
         glow: 0x647184,
         glowAlpha: 0.26,
@@ -275,7 +332,7 @@ function ballStyle(palette: BallPalette): BallStyle {
         center: 0xaebfce,
         centerAlpha: 0.72,
       };
-    case 'calm-blue':
+    case 'blue':
     default:
       return {
         glow: 0x162f3e,
@@ -296,14 +353,22 @@ function ballStyle(palette: BallPalette): BallStyle {
 
 function paletteColor(palette: ParticlePalette, index: number) {
   switch (palette) {
+    case 'green':
+      return javaRgb(index, 28, 70, 145, 80, 58, 70);
+    case 'yellow':
+      return javaRgb(index, 190, 55, 160, 70, 46, 50);
     case 'red':
       return javaRgb(index, 0x80, 127, 0, 90, 0, 90);
+    case 'pink':
+      return javaRgb(index, 210, 45, 80, 45, 120, 45);
+    case 'orange':
+      return javaRgb(index, 210, 45, 90, 65, 26, 45);
+    case 'white':
+      return javaRgb(index, 205, 45, 215, 35, 225, 30);
     case 'pastel':
       return javaRgb(index, 0x80, 64, 0x80, 64, 0x80, 64);
     case 'colorful':
       return colorfulFamilyColor(index);
-    case 'pink':
-      return javaRgb(index, 210, 45, 80, 45, 120, 45);
     case 'blue':
     default:
       return javaRgb(index, 0, 90, 0, 90, 0x80, 127);

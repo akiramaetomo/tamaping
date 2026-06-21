@@ -10,8 +10,15 @@ type PreservedState = {
 };
 
 export type ImpactEvent = {
-  kind: 'wall-x' | 'wall-y' | 'particle' | 'control';
+  kind: 'ball-wall' | 'particle-wall' | 'ball-particle' | 'particle-particle';
   energy: number;
+};
+
+export type ParticleFormationTarget = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
 };
 
 export type StepMetrics = {
@@ -60,6 +67,10 @@ const PARTICLE_CONTAINMENT_EPSILON = 0.25;
 
 function groups(membership: number, filter: number) {
   return (membership << 16) | filter;
+}
+
+function isWallRole(role: BodyRole) {
+  return role === 'wall-x' || role === 'wall-y';
 }
 
 export class DotpingPhysicsWorld {
@@ -152,6 +163,28 @@ export class DotpingPhysicsWorld {
       particle.setTranslation({ x: position.x, y: position.y }, true);
       particle.setLinvel({ x: position.vx, y: position.vy }, true);
     }
+  }
+
+  arrangeParticlesToTargets(targets: ParticleFormationTarget[]) {
+    if (this.particles.length <= 0 || targets.length <= 0) {
+      return false;
+    }
+
+    const radius = this.settings.particleRadius;
+    for (let index = 0; index < this.particles.length; index += 1) {
+      const particle = this.particles[index];
+      const target = targets[index % targets.length];
+      particle.setTranslation(
+        {
+          x: clampToPlayfield(target.x, radius, this.widthValue),
+          y: clampToPlayfield(target.y, radius, this.heightValue),
+        },
+        true,
+      );
+      particle.setLinvel({ x: target.vx, y: target.vy }, true);
+    }
+
+    return true;
   }
 
   setPointer(active: boolean, x: number, y: number) {
@@ -843,20 +876,24 @@ export class DotpingPhysicsWorld {
   }
 
   private impactKind(roleA: BodyRole, roleB: BodyRole): ImpactEvent['kind'] | null {
-    if (roleA === 'wall-x' || roleB === 'wall-x') {
-      return 'wall-x';
+    const hasWall = isWallRole(roleA) || isWallRole(roleB);
+    const hasControl = roleA === 'control' || roleB === 'control';
+    const hasParticle = roleA === 'particle' || roleB === 'particle';
+
+    if (hasWall && hasControl) {
+      return 'ball-wall';
     }
 
-    if (roleA === 'wall-y' || roleB === 'wall-y') {
-      return 'wall-y';
+    if (hasWall && hasParticle) {
+      return 'particle-wall';
     }
 
-    if (roleA === 'control' || roleB === 'control') {
-      return 'control';
+    if (hasControl && hasParticle) {
+      return 'ball-particle';
     }
 
     if (roleA === 'particle' && roleB === 'particle') {
-      return 'particle';
+      return 'particle-particle';
     }
 
     return null;

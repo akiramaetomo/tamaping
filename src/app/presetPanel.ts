@@ -1,0 +1,301 @@
+import {
+  FACTORY_PRESETS,
+  USER_PRESET_COUNT,
+  type UserPreset,
+} from '../sim/presets';
+import { effectivePresetMessageText, presetDisplayLabel } from './messageFormation';
+
+type PresetPanelCallbacks = {
+  onPresetChange(value: string): void;
+  onSaveCurrent(): void;
+  onDeleteSelected(): void;
+  onExportCurrent(): void;
+  onExportUsers(): void;
+  onImportFile(input: HTMLInputElement): void;
+  getCurrentFormationLabel(): string | null;
+};
+
+export class PresetPanel {
+  readonly element: HTMLDivElement;
+
+  private readonly presetSelect: HTMLSelectElement;
+  private readonly saveSlotSelect: HTMLSelectElement;
+  private readonly saveNameInput: HTMLInputElement;
+  private readonly saveFormationLabelInput: HTMLInputElement;
+  private readonly saveButton: HTMLButtonElement;
+  private readonly deleteButton: HTMLButtonElement;
+  private readonly statusEl: HTMLSpanElement;
+  private userPresets: Array<UserPreset | null>;
+
+  constructor(
+    callbacks: PresetPanelCallbacks,
+    userPresets: Array<UserPreset | null>,
+    selectedValue: string,
+  ) {
+    this.userPresets = userPresets;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'hud__preset';
+
+    const title = document.createElement('span');
+    title.className = 'hud__preset-title';
+    title.textContent = 'Preset';
+
+    this.presetSelect = document.createElement('select');
+    this.presetSelect.className = 'hud__select hud__preset-select';
+    this.presetSelect.setAttribute('aria-label', 'Preset');
+    this.presetSelect.addEventListener('change', () => {
+      callbacks.onPresetChange(this.presetSelect.value);
+    });
+
+    const saveLabel = document.createElement('span');
+    saveLabel.className = 'hud__preset-save-label';
+    saveLabel.textContent = 'Save to';
+
+    this.saveSlotSelect = document.createElement('select');
+    this.saveSlotSelect.className = 'hud__select hud__preset-save-select';
+    this.saveSlotSelect.setAttribute('aria-label', 'Save preset destination');
+    this.saveSlotSelect.addEventListener('change', () => {
+      this.syncSaveDestination(callbacks.getCurrentFormationLabel());
+    });
+
+    this.saveNameInput = document.createElement('input');
+    this.saveNameInput.className = 'hud__preset-name';
+    this.saveNameInput.type = 'text';
+    this.saveNameInput.maxLength = 40;
+    this.saveNameInput.placeholder = 'Preset name';
+    this.saveNameInput.setAttribute('aria-label', 'Preset name');
+
+    this.saveFormationLabelInput = document.createElement('input');
+    this.saveFormationLabelInput.className = 'hud__preset-name';
+    this.saveFormationLabelInput.type = 'text';
+    this.saveFormationLabelInput.maxLength = 40;
+    this.saveFormationLabelInput.placeholder = 'Name text';
+    this.saveFormationLabelInput.setAttribute('aria-label', 'Name particle text');
+
+    this.saveButton = document.createElement('button');
+    this.saveButton.className = 'hud__button hud__preset-save';
+    this.saveButton.type = 'button';
+    this.saveButton.textContent = 'Save Current';
+    this.saveButton.disabled = true;
+    this.saveButton.addEventListener('click', () => {
+      callbacks.onSaveCurrent();
+    });
+
+    this.deleteButton = document.createElement('button');
+    this.deleteButton.className = 'hud__button hud__preset-delete';
+    this.deleteButton.type = 'button';
+    this.deleteButton.textContent = 'Delete';
+    this.deleteButton.disabled = true;
+    this.deleteButton.addEventListener('click', () => {
+      callbacks.onDeleteSelected();
+    });
+
+    const exportCurrent = document.createElement('button');
+    exportCurrent.className = 'hud__button hud__preset-export';
+    exportCurrent.type = 'button';
+    exportCurrent.textContent = 'Export Current';
+    exportCurrent.addEventListener('click', () => {
+      callbacks.onExportCurrent();
+    });
+
+    const exportUsers = document.createElement('button');
+    exportUsers.className = 'hud__button hud__preset-export';
+    exportUsers.type = 'button';
+    exportUsers.textContent = 'Export Users';
+    exportUsers.addEventListener('click', () => {
+      callbacks.onExportUsers();
+    });
+
+    const importInput = document.createElement('input');
+    importInput.type = 'file';
+    importInput.accept = 'application/json,.json';
+    importInput.hidden = true;
+    importInput.addEventListener('change', () => {
+      callbacks.onImportFile(importInput);
+    });
+
+    const importButton = document.createElement('button');
+    importButton.className = 'hud__button hud__preset-export';
+    importButton.type = 'button';
+    importButton.textContent = 'Import';
+    importButton.addEventListener('click', () => {
+      importInput.click();
+    });
+
+    this.statusEl = document.createElement('span');
+    this.statusEl.className = 'hud__preset-status';
+    this.statusEl.textContent = 'Ready';
+
+    wrap.append(
+      title,
+      this.presetSelect,
+      saveLabel,
+      this.saveSlotSelect,
+      this.saveNameInput,
+      this.saveFormationLabelInput,
+      this.saveButton,
+      this.deleteButton,
+      exportCurrent,
+      exportUsers,
+      importButton,
+      importInput,
+      this.statusEl,
+    );
+
+    this.element = wrap;
+    this.renderPresetOptions(selectedValue, userPresets);
+    this.renderSaveDestinationOptions('', userPresets, callbacks.getCurrentFormationLabel());
+  }
+
+  get saveName() {
+    return this.saveNameInput.value;
+  }
+
+  get formationLabel() {
+    return this.saveFormationLabelInput.value;
+  }
+
+  selectedUserPresetSlot() {
+    return selectedUserPresetSlot(this.saveSlotSelect);
+  }
+
+  renderPresetOptions(selectedValue: string, userPresets: Array<UserPreset | null>) {
+    this.userPresets = userPresets;
+    this.presetSelect.replaceChildren();
+
+    const custom = document.createElement('option');
+    custom.value = 'custom';
+    custom.textContent = 'Custom tuning';
+    custom.disabled = true;
+    this.presetSelect.appendChild(custom);
+
+    const factoryGroup = document.createElement('optgroup');
+    factoryGroup.label = 'Factory Presets';
+    for (const [index, preset] of FACTORY_PRESETS.entries()) {
+      const option = document.createElement('option');
+      option.value = `factory:${preset.id}`;
+      option.textContent = factorySlotLabel(index, preset.name, preset.formationLabel);
+      factoryGroup.appendChild(option);
+    }
+    this.presetSelect.appendChild(factoryGroup);
+
+    const userGroup = document.createElement('optgroup');
+    userGroup.label = 'User Presets';
+    for (let index = 0; index < USER_PRESET_COUNT; index += 1) {
+      const preset = userPresets[index];
+      const option = document.createElement('option');
+      option.value = `user:${index}`;
+      option.textContent = preset ? userSlotLabel(index, preset) : `${userSlotPrefix(index)} (empty)`;
+      option.disabled = !preset;
+      userGroup.appendChild(option);
+    }
+    this.presetSelect.appendChild(userGroup);
+    this.syncPresetSelectSelection(selectedValue);
+  }
+
+  renderSaveDestinationOptions(
+    selectedValue: string,
+    userPresets: Array<UserPreset | null>,
+    currentFormationLabel: string | null,
+  ) {
+    this.userPresets = userPresets;
+    this.saveSlotSelect.replaceChildren();
+
+    const noDestination = document.createElement('option');
+    noDestination.value = '';
+    noDestination.textContent = 'Not selected';
+    this.saveSlotSelect.appendChild(noDestination);
+
+    for (let index = 0; index < USER_PRESET_COUNT; index += 1) {
+      const option = document.createElement('option');
+      option.value = `${index}`;
+      option.textContent = userSlotLabel(index, userPresets[index]);
+      this.saveSlotSelect.appendChild(option);
+    }
+
+    this.saveSlotSelect.value = selectedValue;
+    this.syncSaveDestination(currentFormationLabel);
+  }
+
+  syncSaveDestination(currentFormationLabel: string | null) {
+    const index = this.selectedUserPresetSlot();
+    const hasDestination = index !== null;
+
+    this.saveButton.disabled = !hasDestination;
+    this.deleteButton.disabled = index === null || !this.userPresets[index];
+
+    if (!hasDestination) {
+      this.saveNameInput.value = '';
+      this.saveFormationLabelInput.value = '';
+      return;
+    }
+
+    const destinationPreset = this.userPresets[index];
+    this.saveNameInput.value = destinationPreset?.name ?? `User ${index + 1}`;
+    this.saveFormationLabelInput.value =
+      effectivePresetFormationLabel(destinationPreset) ?? currentFormationLabel ?? '';
+  }
+
+  syncPresetSelectSelection(activePresetValue: string) {
+    this.presetSelect.value = activePresetValue;
+    if (this.presetSelect.value !== activePresetValue) {
+      this.presetSelect.value = 'custom';
+      return 'custom';
+    }
+
+    return activePresetValue;
+  }
+
+  setStatus(status: string) {
+    this.statusEl.textContent = status;
+    this.statusEl.classList.toggle(
+      'hud__preset-status--modified',
+      status === 'Modified',
+    );
+  }
+}
+
+function userSlotLabel(index: number, preset: UserPreset | null | undefined) {
+  const slot = userSlotPrefix(index);
+  return preset ? `${slot}: ${presetDisplayLabel(preset.name, preset.formationLabel)}` : slot;
+}
+
+function userSlotPrefix(index: number) {
+  return `U${String(index + 1).padStart(2, '0')}`;
+}
+
+function factorySlotLabel(
+  index: number,
+  name: string,
+  formationLabel: string | null | undefined,
+) {
+  const slot = `F${String(index + 1).padStart(2, '0')}`;
+  return `${slot}: ${presetDisplayLabel(factoryDisplayName(name), formationLabel)}`;
+}
+
+function factoryDisplayName(name: string) {
+  return name
+    .replace(/^\d+\.\s*/, '')
+    .replace(/^✦(\d+)\s*/, '✦ ')
+    .trim();
+}
+
+function effectivePresetFormationLabel(preset: UserPreset | null | undefined) {
+  if (!preset) {
+    return null;
+  }
+
+  return effectivePresetMessageText(preset.name, preset.formationLabel);
+}
+
+function selectedUserPresetSlot(select: HTMLSelectElement | null) {
+  if (!select || select.value === '') {
+    return null;
+  }
+
+  const index = Number(select.value);
+  return Number.isInteger(index) && index >= 0 && index < USER_PRESET_COUNT
+    ? index
+    : null;
+}

@@ -1,21 +1,29 @@
 import { AudioEngine } from '../audio/audioEngine';
 import { PixiRenderer } from '../render/pixiRenderer';
-import { DotpingPhysicsWorld, type ImpactEvent, type StepMetrics } from '../sim/physicsWorld';
+import {
+  DotpingPhysicsWorld,
+  type ImpactEvent,
+  type ParticleFormationTarget,
+  type StepMetrics,
+} from '../sim/physicsWorld';
 import {
   createCurrentPresetExport,
   createUserPresetExport,
+  deleteUserPreset,
   FACTORY_PRESETS,
   importUserPresets,
   loadUserPresets,
   parsePresetExport,
   presetFromSettings,
   saveUserPreset,
-  USER_PRESET_COUNT,
+  type FactoryPresetInitialFormation,
+  type PresetPinnedGroup,
   type PresetSettings,
   type UserPreset,
 } from '../sim/presets';
 import {
   DEFAULT_SETTINGS,
+  type AudioWaveform,
   type BallPalette,
   type CollisionMode,
   type ControlBallMode,
@@ -25,6 +33,76 @@ import {
   type ParticleGlowMode,
   type ParticlePalette,
 } from '../sim/settings';
+import {
+  createPinButton,
+  createRange,
+  createSelect,
+  createSettingsGroup,
+  createTextSelect,
+  createToggle,
+  type RangeControl,
+} from './controls';
+import {
+  DEBUG_COPY_FALLBACK_TEXT,
+  DEFAULT_DEBUG_PROFILE,
+  copyTextWithFallback,
+  createAudioDebugLines,
+  createPhysicsDebugLines as createPhysicsDebugTextLines,
+  debugProfileFromLocation,
+  type DebugProfile,
+} from './debugPanel';
+import {
+  MESSAGE_FORMATION_DESKTOP_FONT_RATIO,
+  MESSAGE_FORMATION_LINE_HEIGHT_RATIO,
+  MESSAGE_FORMATION_MIN_FONT_SIZE,
+  MESSAGE_FORMATION_MOBILE_FONT_RATIO,
+  MESSAGE_FORMATION_SAMPLE_ALPHA,
+  createDotFontMessagePoints,
+  createMessageTargetsFromPoints,
+  effectivePresetMessageText,
+  messageBlockHeightRatio,
+  messageLines,
+} from './messageFormation';
+import {
+  PARTICLE_LOAD_VALUE_CLASSES,
+  estimateParticleLoad,
+  particleLoadTitle,
+} from './particleLoad';
+import { PresetPanel } from './presetPanel';
+import {
+  AUDIO_UI_MAX,
+  DAMPING_UI_MAX,
+  LOG_UI_MAX,
+  PARTICLE_GLOW_VIVIDNESS_MAX,
+  WEIGHT_UI_MAX,
+  audioDurationFromSlider,
+  audioFrequencyFromSlider,
+  audioSpreadFromSlider,
+  brightnessResponseFromSlider,
+  controlBallSizeFromSlider,
+  dampingFromSlider,
+  formatAudioDuration,
+  formatAudioFrequency,
+  formatAudioSpread,
+  formatBrightnessResponse,
+  formatControlBallSize,
+  formatDamping,
+  formatGravityStrength,
+  formatVividness,
+  formatWeight,
+  gravityStrengthFromSlider,
+  particleWeightFromSlider,
+  sliderFromAudioDuration,
+  sliderFromAudioFrequency,
+  sliderFromAudioSpread,
+  sliderFromBrightnessResponse,
+  sliderFromControlBallSize,
+  sliderFromDamping,
+  sliderFromGravityStrength,
+  sliderFromParticleWeight,
+  sliderFromWeight,
+  weightFromSlider,
+} from './settingScales';
 
 type RapierModule = any;
 
@@ -35,7 +113,9 @@ type PointerState = {
   y: number;
 };
 
-type PinnableGroupId = 'mode' | 'ball' | 'particles' | 'interaction' | 'audio';
+type PinnableGroupId = Exclude<PresetPinnedGroup, null>;
+type AudioPanelId = 'ball' | 'particle';
+type SettingsMenuSize = 'small' | 'medium' | 'large';
 
 type PinnableSettingsGroup = {
   id: PinnableGroupId;
@@ -45,26 +125,11 @@ type PinnableSettingsGroup = {
   pinButton: HTMLButtonElement;
 };
 
-const DAMPING_UI_MAX = 1000;
-const DAMPING_PHYSICS_MAX = 3;
-const DAMPING_CURVE_POWER = 2;
-const WEIGHT_UI_MAX = 1000;
-const WEIGHT_MIN = 0.1;
-const WEIGHT_MAX = 200;
-const AUDIO_UI_MAX = 1000;
-const CONTROL_BALL_SIZE_MIN = 2;
-const CONTROL_BALL_SIZE_MAX = 200;
-const AUDIO_FREQUENCY_MIN = 100;
-const AUDIO_FREQUENCY_MAX = 10000;
-const AUDIO_SPREAD_MIN = 1;
-const AUDIO_SPREAD_MAX = 2;
-const AUDIO_DURATION_MIN = 1;
-const AUDIO_DURATION_MAX = 1000;
-const PARTICLE_BRIGHTNESS_RESPONSE_MIN = 1;
-const PARTICLE_BRIGHTNESS_RESPONSE_MAX = 100;
-const PARTICLE_GLOW_VIVIDNESS_MAX = 2;
 const DEBUG_AVERAGE_ALPHA = 0.08;
-
+const PARTICLE_RADIUS_MAX = 100;
+const PARTICLE_RIM_WIDTH_MIN = 5;
+const PARTICLE_RIM_WIDTH_MAX = 100;
+const SETTINGS_MENU_SIZE_ORDER: readonly SettingsMenuSize[] = ['small', 'medium', 'large'];
 export class DotpingApp {
   private readonly audio = new AudioEngine();
   private readonly pointer: PointerState = {
@@ -97,15 +162,16 @@ export class DotpingApp {
   private pinnedSettingsEl: HTMLDivElement | null = null;
   private settingsButton: HTMLButtonElement | null = null;
   private settingsHeightButton: HTMLButtonElement | null = null;
-  private presetSelect: HTMLSelectElement | null = null;
-  private saveSlotSelect: HTMLSelectElement | null = null;
-  private saveNameInput: HTMLInputElement | null = null;
-  private saveButton: HTMLButtonElement | null = null;
-  private presetStatusEl: HTMLSpanElement | null = null;
+  private presetPanel: PresetPanel | null = null;
   private userPresets: Array<UserPreset | null> = [];
   private pinnableGroups: PinnableSettingsGroup[] = [];
   private activePinnedGroupId: PinnableGroupId | null = null;
-  private settingsMenuCompact = false;
+  private activePresetValue = 'custom';
+  private activePresetSnapshot: PresetSettings | null = null;
+  private settingsMenuSize: SettingsMenuSize = 'small';
+  private debugProfile: DebugProfile = DEFAULT_DEBUG_PROFILE;
+  private activeAudioPanel: AudioPanelId = 'ball';
+  private particleSizeValueEl: HTMLSpanElement | null = null;
   private syncUiFromSettings = () => {};
 
   constructor(
@@ -115,11 +181,13 @@ export class DotpingApp {
 
   async start() {
     this.settings = settingsFromUrl(DEFAULT_SETTINGS);
+    this.debugProfile = debugProfileFromLocation(window.location.search);
     this.audio.setTuning(this.settings);
     this.userPresets = loadUserPresets();
     this.renderer = new PixiRenderer(this.root);
     await this.renderer.init();
     this.renderer.setParticlePalette(this.settings.particlePalette);
+    this.renderer.setParticleRimWidth(this.settings.particleRimWidth);
     this.renderer.setParticleBrightnessResponse(this.settings.particleBrightnessResponse);
     this.renderer.setParticleGlowMode(this.settings.particleGlowMode);
     this.renderer.setParticleGlowVividness(this.settings.particleGlowVividness);
@@ -137,42 +205,80 @@ export class DotpingApp {
 
     this.buildUi();
     this.attachEvents();
-    this.lastTime = performance.now();
-    this.frameHandle = requestAnimationFrame(this.tick);
+    this.restartFrameLoop();
   }
 
   dispose() {
-    cancelAnimationFrame(this.frameHandle);
+    if (this.frameHandle !== 0) {
+      cancelAnimationFrame(this.frameHandle);
+      this.frameHandle = 0;
+    }
     this.renderer?.dispose();
   }
 
   private readonly tick = (time: number) => {
-    const renderer = this.requireRenderer();
-    const physics = this.requirePhysics();
-    const deltaSeconds = Math.min((time - this.lastTime) / 1000, 0.05);
-    this.lastTime = time;
-    this.accumulator += deltaSeconds;
+    this.frameHandle = 0;
+    try {
+      const renderer = this.requireRenderer();
+      const physics = this.requirePhysics();
+      const deltaSeconds = Math.min((time - this.lastTime) / 1000, 0.05);
+      this.lastTime = time;
+      this.accumulator += deltaSeconds;
 
-    physics.setPointer(this.pointer.active, this.pointer.x, this.pointer.y);
+      physics.setPointer(this.pointer.active, this.pointer.x, this.pointer.y);
 
-    const fixedStep = 1 / 60;
-    let impacts: ImpactEvent[] = [];
-    let fixedSteps = 0;
-    while (this.accumulator >= fixedStep) {
-      const result = physics.step(fixedStep);
-      impacts = result.impacts;
-      this.recordStepMetrics(result.metrics);
-      this.accumulator -= fixedStep;
-      fixedSteps += 1;
+      const fixedStep = 1 / 60;
+      let impacts: ImpactEvent[] = [];
+      let fixedSteps = 0;
+      while (this.accumulator >= fixedStep) {
+        const result = physics.step(fixedStep);
+        impacts = result.impacts;
+        this.recordStepMetrics(result.metrics);
+        this.accumulator -= fixedStep;
+        fixedSteps += 1;
+      }
+      this.fixedStepsLastFrame = fixedSteps;
+
+      renderer.render(physics.snapshot());
+      this.audio.playImpacts(impacts);
+      this.updateDebug(deltaSeconds, impacts.length);
+    } catch (error) {
+      this.pauseFrameLoop(error);
+      return;
     }
-    this.fixedStepsLastFrame = fixedSteps;
-
-    renderer.render(physics.snapshot());
-    this.audio.playImpacts(impacts);
-    this.updateDebug(deltaSeconds, impacts.length);
 
     this.frameHandle = requestAnimationFrame(this.tick);
   };
+
+  private restartFrameLoop() {
+    if (this.frameHandle !== 0) {
+      cancelAnimationFrame(this.frameHandle);
+    }
+    this.accumulator = 0;
+    this.lastTime = performance.now();
+    this.frameHandle = requestAnimationFrame(this.tick);
+  }
+
+  private pauseFrameLoop(error: unknown) {
+    console.error('Dotping frame loop paused', error);
+    this.accumulator = 0;
+    this.fixedStepsLastFrame = 0;
+    this.setPresetStatus('Scene paused - press Reset');
+  }
+
+  private resetScene() {
+    const pointerId = this.pointer.pointerId;
+    if (pointerId !== null && this.renderer?.canvas.hasPointerCapture(pointerId)) {
+      this.renderer.canvas.releasePointerCapture(pointerId);
+    }
+    this.pointer.active = false;
+    this.pointer.pointerId = null;
+    const physics = this.requirePhysics();
+    physics.reset();
+    physics.setPointer(false, this.pointer.x, this.pointer.y);
+    this.restartFrameLoop();
+    this.setPresetStatus('Scene reset');
+  }
 
   private buildUi() {
     const settingsButton = document.createElement('button');
@@ -212,7 +318,7 @@ export class DotpingApp {
     heightToggle.className = 'hud__icon-button hud__height-toggle';
     heightToggle.type = 'button';
     heightToggle.addEventListener('click', () => {
-      this.settingsMenuCompact = !this.settingsMenuCompact;
+      this.settingsMenuSize = nextSettingsMenuSize(this.settingsMenuSize);
       this.applySettingsMenuHeightMode();
     });
     this.settingsHeightButton = heightToggle;
@@ -229,7 +335,7 @@ export class DotpingApp {
 
     const presetGroup = this.createPresetControls();
 
-    const mode = this.createTextSelect<CollisionMode>(
+    const mode = createTextSelect<CollisionMode>(
       'Particle Model',
       [
         ['independence-overlapping', 'Independent overlap'],
@@ -242,42 +348,63 @@ export class DotpingApp {
       syncLinkingOptions();
     });
 
-    const color = this.createTextSelect<ParticlePalette>(
+    const color = createTextSelect<ParticlePalette>(
       'Color',
       [
         ['blue', 'Blue'],
+        ['green', 'Green'],
+        ['yellow', 'Yellow'],
         ['red', 'Red'],
+        ['pink', 'Pink'],
+        ['orange', 'Orange'],
+        ['white', 'White'],
         ['pastel', 'Pastel'],
         ['colorful', 'Colorful'],
-        ['pink', 'Pink'],
       ],
       this.settings.particlePalette,
     );
     color.input.addEventListener('change', () => {
       this.updateSettings({ particlePalette: color.input.value as ParticlePalette }, false);
     });
+    color.wrap.classList.add('hud__control--visual');
 
-    const particleBrightness = this.createRange(
+    const particleRimWidth = createRange(
+      'Rim %',
+      PARTICLE_RIM_WIDTH_MIN,
+      PARTICLE_RIM_WIDTH_MAX,
+      5,
+      this.settings.particleRimWidth,
+    );
+    particleRimWidth.input.addEventListener('input', () => {
+      const particleRimWidthValue = Number(particleRimWidth.input.value);
+      particleRimWidth.value.textContent = `${particleRimWidthValue}%`;
+      this.updateSettings({ particleRimWidth: particleRimWidthValue }, false);
+    });
+    particleRimWidth.value.textContent = `${this.settings.particleRimWidth}%`;
+    particleRimWidth.wrap.classList.add('hud__control--visual');
+
+    const particleBrightness = createRange(
       'Bright',
       0,
       AUDIO_UI_MAX,
       1,
-      this.sliderFromBrightnessResponse(this.settings.particleBrightnessResponse),
+      sliderFromBrightnessResponse(this.settings.particleBrightnessResponse),
     );
     particleBrightness.input.addEventListener('input', () => {
-      const particleBrightnessResponse = this.brightnessResponseFromSlider(
+      const particleBrightnessResponse = brightnessResponseFromSlider(
         Number(particleBrightness.input.value),
       );
-      particleBrightness.value.textContent = this.formatBrightnessResponse(
+      particleBrightness.value.textContent = formatBrightnessResponse(
         particleBrightnessResponse,
       );
       this.updateSettings({ particleBrightnessResponse }, false);
     });
-    particleBrightness.value.textContent = this.formatBrightnessResponse(
+    particleBrightness.value.textContent = formatBrightnessResponse(
       this.settings.particleBrightnessResponse,
     );
+    particleBrightness.wrap.classList.add('hud__control--visual');
 
-    const particleGlow = this.createTextSelect<ParticleGlowMode>(
+    const particleGlow = createTextSelect<ParticleGlowMode>(
       'Glow',
       [
         ['gold', 'Gold'],
@@ -296,8 +423,9 @@ export class DotpingApp {
         false,
       );
     });
+    particleGlow.wrap.classList.add('hud__control--visual');
 
-    const particleVivid = this.createRange(
+    const particleVivid = createRange(
       'Vivid',
       0,
       PARTICLE_GLOW_VIVIDNESS_MAX,
@@ -306,12 +434,13 @@ export class DotpingApp {
     );
     particleVivid.input.addEventListener('input', () => {
       const particleGlowVividness = Number(particleVivid.input.value);
-      particleVivid.value.textContent = this.formatVividness(particleGlowVividness);
+      particleVivid.value.textContent = formatVividness(particleGlowVividness);
       this.updateSettings({ particleGlowVividness }, false);
     });
-    particleVivid.value.textContent = this.formatVividness(this.settings.particleGlowVividness);
+    particleVivid.value.textContent = formatVividness(this.settings.particleGlowVividness);
+    particleVivid.wrap.classList.add('hud__control--visual');
 
-    const combi = this.createTextSelect<DotCombiMode>(
+    const combi = createTextSelect<DotCombiMode>(
       'Particle linking',
       [
         ['off', 'Off'],
@@ -324,7 +453,7 @@ export class DotpingApp {
       syncLinkingOptions();
     });
 
-    const particleLeader = this.createToggle('No.1', this.settings.particleLeaderVisible);
+    const particleLeader = createToggle('No.1', this.settings.particleLeaderVisible);
     particleLeader.wrap.classList.add('hud__link-leader');
     particleLeader.input.addEventListener('change', () => {
       this.updateSettings({ particleLeaderVisible: particleLeader.input.checked }, false);
@@ -339,9 +468,17 @@ export class DotpingApp {
       this.requirePhysics().arrangeFlashParticles();
     });
 
+    const linkName = document.createElement('button');
+    linkName.className = 'hud__button hud__link-name';
+    linkName.type = 'button';
+    linkName.textContent = 'Name';
+    linkName.addEventListener('click', () => {
+      this.arrangePresetNameParticles();
+    });
+
     const linkOptions = document.createElement('div');
     linkOptions.className = 'hud__link-options';
-    linkOptions.append(particleLeader.wrap, linkFlash);
+    linkOptions.append(particleLeader.wrap, linkFlash, linkName);
 
     const syncLinkingOptions = () => {
       const linkingEnabled = this.settings.dotCombiMode === 'velocity';
@@ -349,9 +486,11 @@ export class DotpingApp {
       particleLeader.wrap.classList.toggle('is-disabled', !linkingEnabled);
       linkFlash.title = 'Arrange particles around the ball';
       linkFlash.setAttribute('aria-label', linkFlash.title);
+      linkName.title = 'Arrange particles into the current preset name';
+      linkName.setAttribute('aria-label', linkName.title);
     };
 
-    const gravity = this.createTextSelect<GravityMode>(
+    const gravity = createTextSelect<GravityMode>(
       'Gravity',
       [
         ['none', 'Zero-G'],
@@ -364,23 +503,23 @@ export class DotpingApp {
       this.updateSettings({ gravityMode: gravity.input.value as GravityMode });
     });
 
-    const gravityStrength = this.createRange(
+    const gravityStrength = createRange(
       'Gravity strength',
       0,
-      3,
-      0.05,
-      this.settings.gravityStrength,
+      LOG_UI_MAX,
+      1,
+      sliderFromGravityStrength(this.settings.gravityStrength),
     );
     gravityStrength.input.addEventListener('input', () => {
-      const strength = Number(gravityStrength.input.value);
-      gravityStrength.value.textContent = strength.toFixed(2);
+      const strength = gravityStrengthFromSlider(Number(gravityStrength.input.value));
+      gravityStrength.value.textContent = formatGravityStrength(strength);
       this.updateSettings({ gravityStrength: strength });
     });
-    gravityStrength.value.textContent = this.settings.gravityStrength.toFixed(2);
+    gravityStrength.value.textContent = formatGravityStrength(this.settings.gravityStrength);
 
-    const dots = this.createSelect(
+    const dots = createSelect(
       'Count',
-      [1, 3, 10, 30, 100, 200, 500, 1000, 2000, 5000, 10000],
+      [0, 1, 3, 10, 30, 100, 200, 500, 1000, 2000, 5000, 10000],
       this.settings.particleCount,
     );
     dots.input.addEventListener('change', () => {
@@ -388,29 +527,31 @@ export class DotpingApp {
       this.updateSettings({ particleCount });
     });
 
-    const ball = this.createRange(
+    const ball = createRange(
       'Size',
       0,
       AUDIO_UI_MAX,
       1,
-      this.sliderFromControlBallSize(this.settings.controlBallRadius),
+      sliderFromControlBallSize(this.settings.controlBallRadius),
     );
     ball.input.addEventListener('input', () => {
-      const controlBallRadius = this.controlBallSizeFromSlider(Number(ball.input.value));
-      ball.value.textContent = this.formatControlBallSize(controlBallRadius);
+      const controlBallRadius = controlBallSizeFromSlider(Number(ball.input.value));
+      ball.value.textContent = formatControlBallSize(controlBallRadius);
       this.updateSettings({ controlBallRadius });
     });
-    ball.value.textContent = this.formatControlBallSize(this.settings.controlBallRadius);
+    ball.value.textContent = formatControlBallSize(this.settings.controlBallRadius);
 
-    const ballColor = this.createTextSelect<BallPalette>(
+    const ballColor = createTextSelect<BallPalette>(
       'Color',
       [
-        ['black-hole', 'Black hole'],
-        ['calm-blue', 'Calm blue'],
-        ['solar-yellow', 'Solar yellow'],
-        ['red-core', 'Red core'],
-        ['pink-glow', 'Pink glow'],
-        ['white-star', 'White star'],
+        ['black', 'Black'],
+        ['blue', 'Blue'],
+        ['green', 'Green'],
+        ['yellow', 'Yellow'],
+        ['red', 'Red'],
+        ['pink', 'Pink'],
+        ['orange', 'Orange'],
+        ['white', 'White'],
       ],
       this.settings.controlBallPalette,
     );
@@ -420,13 +561,15 @@ export class DotpingApp {
         false,
       );
     });
+    ballColor.wrap.classList.add('hud__control--visual');
 
-    const ballRim = this.createToggle('Rim', this.settings.controlBallRimEnabled);
+    const ballRim = createToggle('Rim', this.settings.controlBallRimEnabled);
     ballRim.input.addEventListener('change', () => {
       this.updateSettings({ controlBallRimEnabled: ballRim.input.checked }, false);
     });
+    ballRim.wrap.classList.add('hud__toggle--visual');
 
-    const ballMode = this.createTextSelect<ControlBallMode>(
+    const ballMode = createTextSelect<ControlBallMode>(
       'Ball mode',
       [
         ['persistent', 'Persistent'],
@@ -438,20 +581,36 @@ export class DotpingApp {
       this.updateSettings({ controlBallMode: ballMode.input.value as ControlBallMode });
     });
 
-    const particle = this.createRange(
+    const particle = createRange(
       'Size',
       2,
-      50,
+      PARTICLE_RADIUS_MAX,
       1,
       this.settings.particleRadius,
     );
+    this.particleSizeValueEl = particle.value;
     particle.input.addEventListener('input', () => {
       const particleRadius = Number(particle.input.value);
       particle.value.textContent = `${particleRadius}`;
       this.updateSettings({ particleRadius });
+      this.syncParticleLoadValue();
     });
 
-    const wallBounce = this.createRange(
+    const particleWeight = createRange(
+      'Weight',
+      0,
+      LOG_UI_MAX,
+      1,
+      sliderFromParticleWeight(this.settings.particleMass),
+    );
+    particleWeight.input.addEventListener('input', () => {
+      const particleMass = particleWeightFromSlider(Number(particleWeight.input.value));
+      particleWeight.value.textContent = formatWeight(particleMass);
+      this.updateSettings({ particleMass });
+    });
+    particleWeight.value.textContent = formatWeight(this.settings.particleMass);
+
+    const wallBounce = createRange(
       'Wall Bounce',
       0,
       1,
@@ -467,7 +626,7 @@ export class DotpingApp {
     });
     wallBounce.value.textContent = this.settings.wallRestitution.toFixed(2);
 
-    const contactBounce = this.createRange(
+    const contactBounce = createRange(
       'Contact Bounce',
       0,
       1,
@@ -483,35 +642,35 @@ export class DotpingApp {
     });
     contactBounce.value.textContent = this.settings.contactRestitution.toFixed(2);
 
-    const weight = this.createRange(
+    const weight = createRange(
       'Weight',
       0,
       WEIGHT_UI_MAX,
       1,
-      this.sliderFromWeight(this.settings.controlBallMass),
+      sliderFromWeight(this.settings.controlBallMass),
     );
     weight.input.addEventListener('input', () => {
-      const controlBallMass = this.weightFromSlider(Number(weight.input.value));
-      weight.value.textContent = this.formatWeight(controlBallMass);
+      const controlBallMass = weightFromSlider(Number(weight.input.value));
+      weight.value.textContent = formatWeight(controlBallMass);
       this.updateSettings({ controlBallMass });
     });
-    weight.value.textContent = this.formatWeight(this.settings.controlBallMass);
+    weight.value.textContent = formatWeight(this.settings.controlBallMass);
 
     const ballDrag = this.createDampingRange('Damping', this.settings.controlBallLinearDamping);
     ballDrag.input.addEventListener('input', () => {
-      const controlBallLinearDamping = this.dampingFromSlider(Number(ballDrag.input.value));
-      ballDrag.value.textContent = this.formatDamping(controlBallLinearDamping);
+      const controlBallLinearDamping = dampingFromSlider(Number(ballDrag.input.value));
+      ballDrag.value.textContent = formatDamping(controlBallLinearDamping);
       this.updateSettings({ controlBallLinearDamping });
     });
 
     const dotDrag = this.createDampingRange('Damping', this.settings.particleLinearDamping);
     dotDrag.input.addEventListener('input', () => {
-      const particleLinearDamping = this.dampingFromSlider(Number(dotDrag.input.value));
-      dotDrag.value.textContent = this.formatDamping(particleLinearDamping);
+      const particleLinearDamping = dampingFromSlider(Number(dotDrag.input.value));
+      dotDrag.value.textContent = formatDamping(particleLinearDamping);
       this.updateSettings({ particleLinearDamping });
     });
 
-    const friction = this.createRange(
+    const friction = createRange(
       'Friction',
       0,
       0.25,
@@ -528,55 +687,213 @@ export class DotpingApp {
     });
     friction.value.textContent = this.settings.controlBallFriction.toFixed(3);
 
-    const audioFrequency = this.createRange(
+    const audioBallTab = document.createElement('button');
+    audioBallTab.className = 'hud__button hud__audio-tab';
+    audioBallTab.type = 'button';
+    audioBallTab.textContent = 'Ball';
+    audioBallTab.setAttribute('aria-pressed', 'true');
+
+    const audioParticleTab = document.createElement('button');
+    audioParticleTab.className = 'hud__button hud__audio-tab';
+    audioParticleTab.type = 'button';
+    audioParticleTab.textContent = 'Particle';
+    audioParticleTab.setAttribute('aria-pressed', 'false');
+
+    const audioTabs = document.createElement('div');
+    audioTabs.className = 'hud__audio-tabs';
+    audioTabs.append(audioBallTab, audioParticleTab);
+
+    const audioBallPanel = document.createElement('div');
+    audioBallPanel.className = 'hud__audio-panel';
+
+    const audioParticlePanel = document.createElement('div');
+    audioParticlePanel.className = 'hud__audio-panel';
+
+    const syncAudioPanel = () => {
+      const showBall = this.activeAudioPanel === 'ball';
+      audioBallPanel.hidden = !showBall;
+      audioParticlePanel.hidden = showBall;
+      audioBallTab.setAttribute('aria-pressed', `${showBall}`);
+      audioParticleTab.setAttribute('aria-pressed', `${!showBall}`);
+    };
+
+    audioBallTab.addEventListener('click', () => {
+      this.activeAudioPanel = 'ball';
+      syncAudioPanel();
+    });
+    audioParticleTab.addEventListener('click', () => {
+      this.activeAudioPanel = 'particle';
+      syncAudioPanel();
+    });
+
+    const audioBallWave = createTextSelect<AudioWaveform>(
+      'Wave',
+      [
+        ['sine', 'Sine'],
+        ['triangle', 'Triangle'],
+        ['sawtooth', 'Sawtooth'],
+        ['square', 'Square'],
+      ],
+      this.settings.audioBallWaveform,
+    );
+    audioBallWave.input.addEventListener('change', () => {
+      this.updateSettings(
+        { audioBallWaveform: audioBallWave.input.value as AudioWaveform },
+        false,
+      );
+    });
+
+    const audioBallFrequency = createRange(
       'Pitch',
       0,
       AUDIO_UI_MAX,
       1,
-      this.sliderFromAudioFrequency(this.settings.audioFrequencyHz),
+      sliderFromAudioFrequency(this.settings.audioBallFrequencyHz),
     );
-    audioFrequency.input.addEventListener('input', () => {
-      const audioFrequencyHz = this.audioFrequencyFromSlider(Number(audioFrequency.input.value));
-      audioFrequency.value.textContent = this.formatAudioFrequency(audioFrequencyHz);
-      this.updateSettings({ audioFrequencyHz }, false);
+    audioBallFrequency.input.addEventListener('input', () => {
+      const audioBallFrequencyHz = audioFrequencyFromSlider(
+        Number(audioBallFrequency.input.value),
+      );
+      audioBallFrequency.value.textContent = formatAudioFrequency(audioBallFrequencyHz);
+      this.updateSettings({ audioBallFrequencyHz }, false);
     });
-    audioFrequency.value.textContent = this.formatAudioFrequency(this.settings.audioFrequencyHz);
+    audioBallFrequency.value.textContent = formatAudioFrequency(
+      this.settings.audioBallFrequencyHz,
+    );
 
-    const audioSpread = this.createRange(
+    const audioBallSpread = createRange(
       'Spread',
       0,
       AUDIO_UI_MAX,
       1,
-      this.sliderFromAudioSpread(this.settings.audioFrequencySpread),
+      sliderFromAudioSpread(this.settings.audioBallFrequencySpread),
     );
-    audioSpread.input.addEventListener('input', () => {
-      const audioFrequencySpread = this.audioSpreadFromSlider(Number(audioSpread.input.value));
-      audioSpread.value.textContent = this.formatAudioSpread(audioFrequencySpread);
-      this.updateSettings({ audioFrequencySpread }, false);
+    audioBallSpread.input.addEventListener('input', () => {
+      const audioBallFrequencySpread = audioSpreadFromSlider(
+        Number(audioBallSpread.input.value),
+      );
+      audioBallSpread.value.textContent = formatAudioSpread(audioBallFrequencySpread);
+      this.updateSettings({ audioBallFrequencySpread }, false);
     });
-    audioSpread.value.textContent = this.formatAudioSpread(this.settings.audioFrequencySpread);
+    audioBallSpread.value.textContent = formatAudioSpread(
+      this.settings.audioBallFrequencySpread,
+    );
 
-    const audioLength = this.createRange(
+    const audioBallLength = createRange(
       'Sound Len.',
       0,
       AUDIO_UI_MAX,
       1,
-      this.sliderFromAudioDuration(this.settings.audioDurationMs),
+      sliderFromAudioDuration(this.settings.audioBallDurationMs),
     );
-    audioLength.input.addEventListener('input', () => {
-      const audioDurationMs = this.audioDurationFromSlider(Number(audioLength.input.value));
-      audioLength.value.textContent = this.formatAudioDuration(audioDurationMs);
-      this.updateSettings({ audioDurationMs }, false);
+    audioBallLength.input.addEventListener('input', () => {
+      const audioBallDurationMs = audioDurationFromSlider(
+        Number(audioBallLength.input.value),
+      );
+      audioBallLength.value.textContent = formatAudioDuration(audioBallDurationMs);
+      this.updateSettings({ audioBallDurationMs }, false);
     });
-    audioLength.value.textContent = this.formatAudioDuration(this.settings.audioDurationMs);
+    audioBallLength.value.textContent = formatAudioDuration(
+      this.settings.audioBallDurationMs,
+    );
 
-    const sound = this.createToggle('Sound', this.settings.soundEnabled);
+    audioBallPanel.append(
+      audioBallWave.wrap,
+      audioBallFrequency.wrap,
+      audioBallSpread.wrap,
+      audioBallLength.wrap,
+    );
+
+    const audioParticleWave = createTextSelect<AudioWaveform>(
+      'Wave',
+      [
+        ['sine', 'Sine'],
+        ['triangle', 'Triangle'],
+        ['sawtooth', 'Sawtooth'],
+        ['square', 'Square'],
+      ],
+      this.settings.audioParticleWaveform,
+    );
+    audioParticleWave.input.addEventListener('change', () => {
+      this.updateSettings(
+        { audioParticleWaveform: audioParticleWave.input.value as AudioWaveform },
+        false,
+      );
+    });
+
+    const audioParticleFrequency = createRange(
+      'Pitch',
+      0,
+      AUDIO_UI_MAX,
+      1,
+      sliderFromAudioFrequency(this.settings.audioParticleFrequencyHz),
+    );
+    audioParticleFrequency.input.addEventListener('input', () => {
+      const audioParticleFrequencyHz = audioFrequencyFromSlider(
+        Number(audioParticleFrequency.input.value),
+      );
+      audioParticleFrequency.value.textContent = formatAudioFrequency(
+        audioParticleFrequencyHz,
+      );
+      this.updateSettings({ audioParticleFrequencyHz }, false);
+    });
+    audioParticleFrequency.value.textContent = formatAudioFrequency(
+      this.settings.audioParticleFrequencyHz,
+    );
+
+    const audioParticleSpread = createRange(
+      'Spread',
+      0,
+      AUDIO_UI_MAX,
+      1,
+      sliderFromAudioSpread(this.settings.audioParticleFrequencySpread),
+    );
+    audioParticleSpread.input.addEventListener('input', () => {
+      const audioParticleFrequencySpread = audioSpreadFromSlider(
+        Number(audioParticleSpread.input.value),
+      );
+      audioParticleSpread.value.textContent = formatAudioSpread(
+        audioParticleFrequencySpread,
+      );
+      this.updateSettings({ audioParticleFrequencySpread }, false);
+    });
+    audioParticleSpread.value.textContent = formatAudioSpread(
+      this.settings.audioParticleFrequencySpread,
+    );
+
+    const audioParticleLength = createRange(
+      'Sound Len.',
+      0,
+      AUDIO_UI_MAX,
+      1,
+      sliderFromAudioDuration(this.settings.audioParticleDurationMs),
+    );
+    audioParticleLength.input.addEventListener('input', () => {
+      const audioParticleDurationMs = audioDurationFromSlider(
+        Number(audioParticleLength.input.value),
+      );
+      audioParticleLength.value.textContent = formatAudioDuration(audioParticleDurationMs);
+      this.updateSettings({ audioParticleDurationMs }, false);
+    });
+    audioParticleLength.value.textContent = formatAudioDuration(
+      this.settings.audioParticleDurationMs,
+    );
+
+    audioParticlePanel.append(
+      audioParticleWave.wrap,
+      audioParticleFrequency.wrap,
+      audioParticleSpread.wrap,
+      audioParticleLength.wrap,
+    );
+    syncAudioPanel();
+
+    const sound = createToggle('Sound', this.settings.soundEnabled);
     sound.input.addEventListener('change', () => {
       this.updateSettings({ soundEnabled: sound.input.checked }, false, false);
       this.audio.setEnabled(sound.input.checked);
     });
 
-    const debug = this.createToggle('Debug', this.settings.debug);
+    const debug = createToggle('Debug', this.settings.debug);
     debug.input.addEventListener('change', () => {
       this.updateSettings({ debug: debug.input.checked }, false, false);
       this.requirePhysics().setDiagnosticsEnabled(debug.input.checked);
@@ -596,51 +913,63 @@ export class DotpingApp {
     reset.className = 'hud__button';
     reset.type = 'button';
     reset.textContent = 'Reset';
-    reset.title = 'Reset scene with current settings';
-    reset.setAttribute('aria-label', 'Reset scene with current settings');
-    reset.addEventListener('click', () => this.requirePhysics().reset());
+    reset.title = 'Reset scene with current settings and restart graphics';
+    reset.setAttribute('aria-label', 'Reset scene with current settings and restart graphics');
+    reset.addEventListener('click', () => this.resetScene());
 
-    const modePin = this.createPinButton('mode', 'Mode');
-    const ballPin = this.createPinButton('ball', 'Ball');
-    const particlesPin = this.createPinButton('particles', 'Particles');
-    const interactionPin = this.createPinButton('interaction', 'Interaction');
-    const audioPin = this.createPinButton('audio', 'Audio');
+    const modePin = createPinButton<PinnableGroupId>('mode', 'Mode', (id) => {
+      this.togglePinnedGroup(id);
+    });
+    const ballPin = createPinButton<PinnableGroupId>('ball', 'Ball', (id) => {
+      this.togglePinnedGroup(id);
+    });
+    const particlesPin = createPinButton<PinnableGroupId>('particles', 'Particles', (id) => {
+      this.togglePinnedGroup(id);
+    });
+    const interactionPin = createPinButton<PinnableGroupId>('interaction', 'Interaction', (id) => {
+      this.togglePinnedGroup(id);
+    });
+    const audioPin = createPinButton<PinnableGroupId>('audio', 'Audio', (id) => {
+      this.togglePinnedGroup(id);
+    });
 
-    const modeGroup = this.createSettingsGroup('Mode', 'mode', [
+    const modeGroup = createSettingsGroup('Mode', 'mode', [
       mode.wrap,
-      gravity.wrap,
-      gravityStrength.wrap,
       combi.wrap,
       linkOptions,
+      gravity.wrap,
+      gravityStrength.wrap,
     ], modePin);
-    const ballGroup = this.createSettingsGroup('Ball', 'ball', [
-      ball.wrap,
-      ballColor.wrap,
-      ballRim.wrap,
+    const ballGroup = createSettingsGroup('Ball', 'ball', [
       ballMode.wrap,
+      ball.wrap,
       weight.wrap,
       ballDrag.wrap,
+      ballColor.wrap,
+      ballRim.wrap,
     ], ballPin);
-    const dotsGroup = this.createSettingsGroup('Particles', 'particles', [
+    const dotsGroup = createSettingsGroup('Particles', 'particles', [
       dots.wrap,
       particle.wrap,
+      particleWeight.wrap,
       dotDrag.wrap,
       color.wrap,
-      particleBrightness.wrap,
+      particleRimWidth.wrap,
       particleGlow.wrap,
+      particleBrightness.wrap,
       particleVivid.wrap,
     ], particlesPin);
-    const interactionGroup = this.createSettingsGroup('Interaction', 'interaction', [
+    const interactionGroup = createSettingsGroup('Interaction', 'interaction', [
       wallBounce.wrap,
       contactBounce.wrap,
       friction.wrap,
     ], interactionPin);
-    const audioGroup = this.createSettingsGroup('Audio', 'audio', [
-      audioFrequency.wrap,
-      audioSpread.wrap,
-      audioLength.wrap,
+    const audioGroup = createSettingsGroup('Audio', 'audio', [
+      audioTabs,
+      audioBallPanel,
+      audioParticlePanel,
     ], [sound.wrap, audioPin]);
-    const utilityGroup = this.createSettingsGroup('Utility', 'utility', [
+    const utilityGroup = createSettingsGroup('Utility', 'utility', [
       debug.wrap,
       copyDebug,
       reset,
@@ -665,45 +994,87 @@ export class DotpingApp {
       mode.input.value = this.settings.collisionMode;
       color.input.value = this.settings.particlePalette;
       particleBrightness.input.value = `${
-        this.sliderFromBrightnessResponse(this.settings.particleBrightnessResponse)
+        sliderFromBrightnessResponse(this.settings.particleBrightnessResponse)
       }`;
-      particleBrightness.value.textContent = this.formatBrightnessResponse(
+      particleBrightness.value.textContent = formatBrightnessResponse(
         this.settings.particleBrightnessResponse,
       );
+      particleRimWidth.input.value = `${this.settings.particleRimWidth}`;
+      particleRimWidth.value.textContent = `${this.settings.particleRimWidth}%`;
       particleGlow.input.value = this.settings.particleGlowMode;
       particleVivid.input.value = `${this.settings.particleGlowVividness}`;
-      particleVivid.value.textContent = this.formatVividness(this.settings.particleGlowVividness);
+      particleVivid.value.textContent = formatVividness(this.settings.particleGlowVividness);
       ballColor.input.value = this.settings.controlBallPalette;
       ballRim.input.checked = this.settings.controlBallRimEnabled;
       ballMode.input.value = this.settings.controlBallMode;
       combi.input.value = this.settings.dotCombiMode;
       particleLeader.input.checked = this.settings.particleLeaderVisible;
       gravity.input.value = this.settings.gravityMode;
-      gravityStrength.input.value = `${this.settings.gravityStrength}`;
-      gravityStrength.value.textContent = this.settings.gravityStrength.toFixed(2);
-      dots.input.value = `${this.settings.particleCount}`;
-      ball.input.value = `${this.sliderFromControlBallSize(this.settings.controlBallRadius)}`;
-      ball.value.textContent = this.formatControlBallSize(this.settings.controlBallRadius);
+      gravityStrength.input.value = `${
+        sliderFromGravityStrength(this.settings.gravityStrength)
+      }`;
+      gravityStrength.value.textContent = formatGravityStrength(
+        this.settings.gravityStrength,
+      );
+      syncSelectValue(dots.input, this.settings.particleCount);
+      ball.input.value = `${sliderFromControlBallSize(this.settings.controlBallRadius)}`;
+      ball.value.textContent = formatControlBallSize(this.settings.controlBallRadius);
       particle.input.value = `${this.settings.particleRadius}`;
       particle.value.textContent = `${this.settings.particleRadius}`;
+      this.syncParticleLoadValue();
+      particleWeight.input.value = `${sliderFromParticleWeight(this.settings.particleMass)}`;
+      particleWeight.value.textContent = formatWeight(this.settings.particleMass);
       wallBounce.input.value = `${this.settings.wallRestitution}`;
       wallBounce.value.textContent = this.settings.wallRestitution.toFixed(2);
       contactBounce.input.value = `${this.settings.contactRestitution}`;
       contactBounce.value.textContent = this.settings.contactRestitution.toFixed(2);
-      weight.input.value = `${this.sliderFromWeight(this.settings.controlBallMass)}`;
-      weight.value.textContent = this.formatWeight(this.settings.controlBallMass);
-      ballDrag.input.value = `${this.sliderFromDamping(this.settings.controlBallLinearDamping)}`;
-      ballDrag.value.textContent = this.formatDamping(this.settings.controlBallLinearDamping);
-      dotDrag.input.value = `${this.sliderFromDamping(this.settings.particleLinearDamping)}`;
-      dotDrag.value.textContent = this.formatDamping(this.settings.particleLinearDamping);
+      weight.input.value = `${sliderFromWeight(this.settings.controlBallMass)}`;
+      weight.value.textContent = formatWeight(this.settings.controlBallMass);
+      ballDrag.input.value = `${sliderFromDamping(this.settings.controlBallLinearDamping)}`;
+      ballDrag.value.textContent = formatDamping(this.settings.controlBallLinearDamping);
+      dotDrag.input.value = `${sliderFromDamping(this.settings.particleLinearDamping)}`;
+      dotDrag.value.textContent = formatDamping(this.settings.particleLinearDamping);
       friction.input.value = `${this.settings.controlBallFriction}`;
       friction.value.textContent = this.settings.controlBallFriction.toFixed(3);
-      audioFrequency.input.value = `${this.sliderFromAudioFrequency(this.settings.audioFrequencyHz)}`;
-      audioFrequency.value.textContent = this.formatAudioFrequency(this.settings.audioFrequencyHz);
-      audioSpread.input.value = `${this.sliderFromAudioSpread(this.settings.audioFrequencySpread)}`;
-      audioSpread.value.textContent = this.formatAudioSpread(this.settings.audioFrequencySpread);
-      audioLength.input.value = `${this.sliderFromAudioDuration(this.settings.audioDurationMs)}`;
-      audioLength.value.textContent = this.formatAudioDuration(this.settings.audioDurationMs);
+      audioBallWave.input.value = this.settings.audioBallWaveform;
+      audioBallFrequency.input.value = `${
+        sliderFromAudioFrequency(this.settings.audioBallFrequencyHz)
+      }`;
+      audioBallFrequency.value.textContent = formatAudioFrequency(
+        this.settings.audioBallFrequencyHz,
+      );
+      audioBallSpread.input.value = `${
+        sliderFromAudioSpread(this.settings.audioBallFrequencySpread)
+      }`;
+      audioBallSpread.value.textContent = formatAudioSpread(
+        this.settings.audioBallFrequencySpread,
+      );
+      audioBallLength.input.value = `${
+        sliderFromAudioDuration(this.settings.audioBallDurationMs)
+      }`;
+      audioBallLength.value.textContent = formatAudioDuration(
+        this.settings.audioBallDurationMs,
+      );
+      audioParticleWave.input.value = this.settings.audioParticleWaveform;
+      audioParticleFrequency.input.value = `${
+        sliderFromAudioFrequency(this.settings.audioParticleFrequencyHz)
+      }`;
+      audioParticleFrequency.value.textContent = formatAudioFrequency(
+        this.settings.audioParticleFrequencyHz,
+      );
+      audioParticleSpread.input.value = `${
+        sliderFromAudioSpread(this.settings.audioParticleFrequencySpread)
+      }`;
+      audioParticleSpread.value.textContent = formatAudioSpread(
+        this.settings.audioParticleFrequencySpread,
+      );
+      audioParticleLength.input.value = `${
+        sliderFromAudioDuration(this.settings.audioParticleDurationMs)
+      }`;
+      audioParticleLength.value.textContent = formatAudioDuration(
+        this.settings.audioParticleDurationMs,
+      );
+      syncAudioPanel();
       sound.input.checked = this.settings.soundEnabled;
       debug.input.checked = this.settings.debug;
       syncLinkingOptions();
@@ -727,6 +1098,7 @@ export class DotpingApp {
     );
     this.root.appendChild(panel);
     this.applySettingsMenuHeightMode();
+    this.setSettingsPanelOpen(true);
 
     this.debugEl = document.createElement('div');
     this.debugEl.className = 'debug';
@@ -770,6 +1142,7 @@ export class DotpingApp {
       const renderer = this.requireRenderer();
       renderer.resize();
       this.requirePhysics().resize(renderer.width, renderer.height);
+      this.syncParticleLoadValue();
       if (!window.matchMedia('(max-width: 760px)').matches) {
         this.setSettingsPanelOpen(false);
       }
@@ -817,7 +1190,9 @@ export class DotpingApp {
     if (rebuild) {
       this.requirePhysics().updateSettings(this.settings);
     }
+    this.syncParticleLoadValue();
     this.renderer?.setParticlePalette(this.settings.particlePalette);
+    this.renderer?.setParticleRimWidth(this.settings.particleRimWidth);
     this.renderer?.setParticleBrightnessResponse(this.settings.particleBrightnessResponse);
     this.renderer?.setParticleGlowMode(this.settings.particleGlowMode);
     this.renderer?.setParticleGlowVividness(this.settings.particleGlowVividness);
@@ -830,34 +1205,261 @@ export class DotpingApp {
     return this.settings.particleLeaderVisible && this.settings.dotCombiMode === 'velocity';
   }
 
+  private arrangePresetNameParticles(reportStatus = true) {
+    const physics = this.requirePhysics();
+    if (physics.particleCount <= 0) {
+      if (reportStatus) {
+        this.setPresetStatus('No particles');
+      }
+      return false;
+    }
+
+    const text = this.currentPresetMessageText();
+    const targets = this.createMessageFormationTargets(text, physics.particleCount);
+    if (targets.length <= 0 || !physics.arrangeParticlesToTargets(targets)) {
+      if (reportStatus) {
+        this.setPresetStatus('Name unavailable');
+      }
+      return false;
+    }
+
+    if (reportStatus) {
+      this.setPresetStatus('Name formed');
+    }
+    return true;
+  }
+
+  private currentPresetMessageText() {
+    const value = this.activePresetValue;
+    if (value.startsWith('factory:')) {
+      const id = value.slice('factory:'.length);
+      const preset = FACTORY_PRESETS.find((candidate) => candidate.id === id);
+      return effectivePresetMessageText(preset?.name, preset?.formationLabel);
+    }
+
+    if (value.startsWith('user:')) {
+      const index = Number(value.slice('user:'.length));
+      const preset = this.userPresets[index];
+      return effectivePresetMessageText(preset?.name, preset?.formationLabel);
+    }
+
+    return 'Custom';
+  }
+
+  private currentPresetFormationLabel() {
+    const value = this.activePresetValue;
+    if (value.startsWith('factory:')) {
+      const id = value.slice('factory:'.length);
+      const preset = FACTORY_PRESETS.find((candidate) => candidate.id === id);
+      return effectivePresetMessageText(preset?.name, preset?.formationLabel);
+    }
+
+    if (value.startsWith('user:')) {
+      const index = Number(value.slice('user:'.length));
+      const preset = this.userPresets[index];
+      return effectivePresetMessageText(preset?.name, preset?.formationLabel);
+    }
+
+    return null;
+  }
+
+  private currentPresetExportName() {
+    const value = this.activePresetValue;
+    if (value.startsWith('factory:')) {
+      const id = value.slice('factory:'.length);
+      const preset = FACTORY_PRESETS.find((candidate) => candidate.id === id);
+      return preset?.name ?? 'Current';
+    }
+
+    if (value.startsWith('user:')) {
+      const index = Number(value.slice('user:'.length));
+      return this.userPresets[index]?.name ?? 'Current';
+    }
+
+    return 'Current';
+  }
+
+  private createMessageFormationTargets(
+    text: string,
+    particleCount: number,
+  ): ParticleFormationTarget[] {
+    const renderer = this.requireRenderer();
+    const width = Math.max(Math.floor(renderer.width), 1);
+    const height = Math.max(Math.floor(renderer.height), 1);
+    const mobile = window.matchMedia('(max-width: 760px)').matches;
+    const settingsOpen = this.isSettingsPanelOpen();
+    const margin = mobile
+      ? Math.max(6, width * 0.025)
+      : Math.max(18, Math.min(width, height) * 0.06);
+    const textBoxWidth = Math.max(width - margin * 2, 1);
+    const textBoxHeight = Math.max(height * (mobile ? (settingsOpen ? 0.32 : 0.44) : 0.42), 1);
+    const centerX = width * 0.5;
+    const centerY = height * (mobile ? (settingsOpen ? 0.24 : 0.36) : 0.5);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) {
+      return [];
+    }
+
+    const message = text.trim() || 'Custom';
+    const lines = messageLines(message, mobile);
+    const dotFontPoints = createDotFontMessagePoints(
+      lines,
+      textBoxWidth,
+      textBoxHeight,
+      centerX,
+      centerY,
+    );
+    if (dotFontPoints.length > 0) {
+      return createMessageTargetsFromPoints(
+        dotFontPoints,
+        particleCount,
+        width,
+        height,
+        this.settings.particleRadius,
+      );
+    }
+
+    const fontSize = this.messageFontSize(
+      context,
+      lines,
+      textBoxWidth,
+      textBoxHeight,
+      mobile,
+    );
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = '#ffffff';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.font = `800 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+    this.drawMessageLines(context, lines, centerX, centerY, textBoxWidth, fontSize);
+
+    const image = context.getImageData(0, 0, width, height);
+    const points = this.sampleMessagePixels(image, fontSize);
+    if (points.length <= 0) {
+      return [];
+    }
+
+    return createMessageTargetsFromPoints(
+      points,
+      particleCount,
+      width,
+      height,
+      this.settings.particleRadius,
+    );
+  }
+
+  private messageFontSize(
+    context: CanvasRenderingContext2D,
+    lines: string[],
+    maxWidth: number,
+    maxHeight: number,
+    mobile: boolean,
+  ) {
+    const fontRatio = mobile
+      ? MESSAGE_FORMATION_MOBILE_FONT_RATIO
+      : MESSAGE_FORMATION_DESKTOP_FONT_RATIO;
+    let fontSize = Math.min(
+      Math.max(
+        MESSAGE_FORMATION_MIN_FONT_SIZE,
+        maxHeight / messageBlockHeightRatio(lines.length),
+      ),
+      Math.max(MESSAGE_FORMATION_MIN_FONT_SIZE, maxWidth * fontRatio),
+    );
+
+    while (fontSize > MESSAGE_FORMATION_MIN_FONT_SIZE) {
+      context.font = `800 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+      const maxLineWidth = Math.max(...lines.map((line) => context.measureText(line).width));
+      if (
+        maxLineWidth <= maxWidth &&
+        fontSize * messageBlockHeightRatio(lines.length) <= maxHeight
+      ) {
+        break;
+      }
+      fontSize *= 0.92;
+    }
+
+    return Math.max(MESSAGE_FORMATION_MIN_FONT_SIZE, Math.floor(fontSize));
+  }
+
+  private drawMessageLines(
+    context: CanvasRenderingContext2D,
+    lines: string[],
+    centerX: number,
+    centerY: number,
+    maxWidth: number,
+    fontSize: number,
+  ) {
+    const lineGap = fontSize * MESSAGE_FORMATION_LINE_HEIGHT_RATIO;
+    const firstY = centerY - ((lines.length - 1) * lineGap) / 2;
+    for (let index = 0; index < lines.length; index += 1) {
+      context.fillText(lines[index], centerX, firstY + index * lineGap, maxWidth);
+    }
+  }
+
+  private sampleMessagePixels(image: ImageData, fontSize: number) {
+    const points: Array<{ x: number; y: number }> = [];
+    const step = Math.max(
+      4,
+      Math.floor(Math.max(this.settings.particleRadius * 2.25, fontSize / 13)),
+    );
+
+    for (let y = 0; y < image.height; y += step) {
+      for (let x = 0; x < image.width; x += step) {
+        const alpha = image.data[(y * image.width + x) * 4 + 3] ?? 0;
+        if (alpha >= MESSAGE_FORMATION_SAMPLE_ALPHA) {
+          points.push({ x, y });
+        }
+      }
+    }
+
+    return points;
+  }
+
+  private syncParticleLoadValue() {
+    const valueEl = this.particleSizeValueEl;
+    if (!valueEl) {
+      return;
+    }
+
+    for (const className of PARTICLE_LOAD_VALUE_CLASSES) {
+      valueEl.classList.remove(className);
+    }
+
+    const renderer = this.renderer;
+    const load = estimateParticleLoad({
+      width: renderer?.width ?? 0,
+      height: renderer?.height ?? 0,
+      particleCount: this.settings.particleCount,
+      particleRadius: this.settings.particleRadius,
+    });
+    if (load.level !== 'normal') {
+      valueEl.classList.add(`hud__value--load-${load.level}`);
+    }
+    valueEl.title = particleLoadTitle(load);
+  }
+
   private setSettingsPanelOpen(open: boolean) {
     this.hudEl?.classList.toggle('hud--open', open);
     this.settingsButton?.setAttribute('aria-expanded', `${open}`);
     this.applyPinnedSettingsPlacement();
+    this.syncPresetSelectSelection();
   }
 
   private applySettingsMenuHeightMode() {
-    const compact = this.settingsMenuCompact;
-    this.hudEl?.classList.toggle('hud--compact', compact);
+    const size = this.settingsMenuSize;
+    this.hudEl?.classList.toggle('hud--small', size === 'small');
+    this.hudEl?.classList.toggle('hud--compact', size === 'medium');
     if (!this.settingsHeightButton) {
       return;
     }
-    const title = compact ? 'Use full settings height' : 'Use compact settings height';
+    const nextSize = nextSettingsMenuSize(size);
+    const title = `Settings size: ${settingsMenuSizeLabel(size)}. Use ${settingsMenuSizeLabel(nextSize)}.`;
     this.settingsHeightButton.title = title;
     this.settingsHeightButton.setAttribute('aria-label', title);
-    this.settingsHeightButton.setAttribute('aria-pressed', `${compact}`);
-  }
-
-  private createPinButton(id: PinnableGroupId, title: string) {
-    const button = document.createElement('button');
-    button.className = 'hud__button hud__pin-button';
-    button.type = 'button';
-    button.textContent = 'Pin';
-    button.title = `Pin ${title} settings to front`;
-    button.setAttribute('aria-label', `Pin ${title} settings to front`);
-    button.setAttribute('aria-pressed', 'false');
-    button.addEventListener('click', () => this.togglePinnedGroup(id));
-    return button;
+    this.settingsHeightButton.dataset.size = size;
   }
 
   private registerPinnableGroup(
@@ -872,13 +1474,27 @@ export class DotpingApp {
   }
 
   private togglePinnedGroup(id: PinnableGroupId) {
-    this.activePinnedGroupId = this.activePinnedGroupId === id ? null : id;
+    const settingsOpen = this.isSettingsPanelOpen();
+    const isClosingFrontPinnedGroup = !settingsOpen && this.activePinnedGroupId === id;
+    this.setPinnedGroup(
+      this.activePinnedGroupId === id ? null : id,
+      !isClosingFrontPinnedGroup,
+    );
+  }
+
+  private setPinnedGroup(id: PresetPinnedGroup, markPresetCustom = true) {
+    this.activePinnedGroupId = id && this.pinnableGroups.some((group) => group.id === id)
+      ? id
+      : null;
     this.applyPinnedSettingsPlacement();
+    if (markPresetCustom) {
+      this.markPresetCustom();
+    }
   }
 
   private applyPinnedSettingsPlacement() {
     const pinnedHost = this.pinnedSettingsEl;
-    const settingsOpen = this.hudEl?.classList.contains('hud--open') ?? false;
+    const settingsOpen = this.isSettingsPanelOpen();
 
     for (const group of this.pinnableGroups) {
       const parent = group.marker.parentNode;
@@ -919,156 +1535,55 @@ export class DotpingApp {
     }
   }
 
+  private isSettingsPanelOpen() {
+    return this.hudEl?.classList.contains('hud--open') ?? false;
+  }
+
   private createPresetControls() {
-    const wrap = document.createElement('div');
-    wrap.className = 'hud__preset';
-
-    const title = document.createElement('span');
-    title.className = 'hud__preset-title';
-    title.textContent = 'Preset';
-
-    const presetSelect = document.createElement('select');
-    presetSelect.className = 'hud__select hud__preset-select';
-    presetSelect.setAttribute('aria-label', 'Preset');
-    this.presetSelect = presetSelect;
-    this.renderPresetOptions('custom');
-    presetSelect.addEventListener('change', () => {
-      this.applySelectedPreset(presetSelect.value);
-    });
-
-    const nameInput = document.createElement('input');
-    nameInput.className = 'hud__preset-name';
-    nameInput.type = 'text';
-    nameInput.maxLength = 40;
-    nameInput.placeholder = 'Preset name';
-    nameInput.setAttribute('aria-label', 'Preset name');
-    this.saveNameInput = nameInput;
-
-    const saveLabel = document.createElement('span');
-    saveLabel.className = 'hud__preset-save-label';
-    saveLabel.textContent = 'Save to';
-
-    const saveSlotSelect = document.createElement('select');
-    saveSlotSelect.className = 'hud__select hud__preset-save-select';
-    saveSlotSelect.setAttribute('aria-label', 'Save preset destination');
-    this.saveSlotSelect = saveSlotSelect;
-    const noDestination = document.createElement('option');
-    noDestination.value = '';
-    noDestination.textContent = 'Not selected';
-    saveSlotSelect.appendChild(noDestination);
-    for (let index = 0; index < USER_PRESET_COUNT; index += 1) {
-      const option = document.createElement('option');
-      option.value = `${index}`;
-      option.textContent = userSlotLabel(index, this.userPresets[index]);
-      saveSlotSelect.appendChild(option);
-    }
-    saveSlotSelect.value = '';
-    saveSlotSelect.addEventListener('change', () => {
-      this.syncSaveDestination();
-    });
-
-    const saveButton = document.createElement('button');
-    saveButton.className = 'hud__button hud__preset-save';
-    saveButton.type = 'button';
-    saveButton.textContent = 'Save Current';
-    saveButton.disabled = true;
-    this.saveButton = saveButton;
-    saveButton.addEventListener('click', () => {
-      this.saveCurrentPreset();
-    });
-
-    const exportCurrent = document.createElement('button');
-    exportCurrent.className = 'hud__button hud__preset-export';
-    exportCurrent.type = 'button';
-    exportCurrent.textContent = 'Export Current';
-    exportCurrent.addEventListener('click', () => {
-      this.exportCurrentPreset();
-    });
-
-    const exportUsers = document.createElement('button');
-    exportUsers.className = 'hud__button hud__preset-export';
-    exportUsers.type = 'button';
-    exportUsers.textContent = 'Export Users';
-    exportUsers.addEventListener('click', () => {
-      this.exportUserPresets();
-    });
-
-    const importInput = document.createElement('input');
-    importInput.type = 'file';
-    importInput.accept = 'application/json,.json';
-    importInput.hidden = true;
-    importInput.addEventListener('change', () => {
-      void this.importPresetFile(importInput);
-    });
-
-    const importButton = document.createElement('button');
-    importButton.className = 'hud__button hud__preset-export';
-    importButton.type = 'button';
-    importButton.textContent = 'Import';
-    importButton.addEventListener('click', () => {
-      importInput.click();
-    });
-
-    const status = document.createElement('span');
-    status.className = 'hud__preset-status';
-    status.textContent = 'Ready';
-    this.presetStatusEl = status;
-
-    wrap.append(
-      title,
-      presetSelect,
-      saveLabel,
-      saveSlotSelect,
-      nameInput,
-      saveButton,
-      exportCurrent,
-      exportUsers,
-      importButton,
-      importInput,
-      status,
+    this.presetPanel = new PresetPanel(
+      {
+        onPresetChange: (value) => {
+          this.applySelectedPreset(value);
+        },
+        onSaveCurrent: () => {
+          this.saveCurrentPreset();
+        },
+        onDeleteSelected: () => {
+          this.deleteSelectedUserPreset();
+        },
+        onExportCurrent: () => {
+          this.exportCurrentPreset();
+        },
+        onExportUsers: () => {
+          this.exportUserPresets();
+        },
+        onImportFile: (input) => {
+          void this.importPresetFile(input);
+        },
+        getCurrentFormationLabel: () => this.currentPresetFormationLabel(),
+      },
+      this.userPresets,
+      this.activePresetValue,
     );
-    return wrap;
+    return this.presetPanel.element;
   }
 
   private renderPresetOptions(selectedValue: string) {
-    if (!this.presetSelect) {
+    if (!this.presetPanel) {
       return;
     }
 
-    this.presetSelect.replaceChildren();
-
-    const custom = document.createElement('option');
-    custom.value = 'custom';
-    custom.textContent = 'Custom';
-    this.presetSelect.appendChild(custom);
-
-    const factoryGroup = document.createElement('optgroup');
-    factoryGroup.label = 'Factory Presets';
-    for (const preset of FACTORY_PRESETS) {
-      const option = document.createElement('option');
-      option.value = `factory:${preset.id}`;
-      option.textContent = preset.name;
-      factoryGroup.appendChild(option);
+    this.activePresetValue = selectedValue;
+    if (selectedValue === 'custom') {
+      this.activePresetSnapshot = null;
     }
-    this.presetSelect.appendChild(factoryGroup);
-
-    const userGroup = document.createElement('optgroup');
-    userGroup.label = 'User Presets';
-    for (let index = 0; index < USER_PRESET_COUNT; index += 1) {
-      const preset = this.userPresets[index];
-      const option = document.createElement('option');
-      option.value = `user:${index}`;
-      option.textContent = preset ? userSlotLabel(index, preset) : `User ${index + 1} (empty)`;
-      option.disabled = !preset;
-      userGroup.appendChild(option);
-    }
-    this.presetSelect.appendChild(userGroup);
-    this.presetSelect.value = selectedValue;
+    this.presetPanel.renderPresetOptions(selectedValue, this.userPresets);
+    this.syncPresetSelectSelection();
   }
 
   private applySelectedPreset(value: string) {
     if (value === 'custom') {
-      this.setPresetStatus('Custom tuning');
+      this.markPresetCustom('Custom tuning');
       return;
     }
 
@@ -1078,7 +1593,7 @@ export class DotpingApp {
       return;
     }
 
-    this.applyPreset(preset, value);
+    this.applyPreset(preset, value, this.initialFormationForPresetValue(value));
   }
 
   private presetSettingsForValue(value: string): PresetSettings | null {
@@ -1095,18 +1610,49 @@ export class DotpingApp {
     return null;
   }
 
-  private applyPreset(preset: PresetSettings, selectedValue: string) {
-    this.updateSettings(preset, true, false);
-    this.syncUiFromSettings();
-    if (this.presetSelect) {
-      this.presetSelect.value = selectedValue;
+  private initialFormationForPresetValue(value: string): FactoryPresetInitialFormation | null {
+    if (!value.startsWith('factory:')) {
+      return null;
     }
+
+    const id = value.slice('factory:'.length);
+    return FACTORY_PRESETS.find((preset) => preset.id === id)?.initialFormation ?? null;
+  }
+
+  private applyPreset(
+    preset: PresetSettings,
+    selectedValue: string,
+    initialFormation: FactoryPresetInitialFormation | null = null,
+  ) {
+    const { pinnedGroup, ...settings } = preset;
+    this.updateSettings(settings, true, false);
+    if (Object.prototype.hasOwnProperty.call(preset, 'pinnedGroup')) {
+      this.setPinnedGroup(pinnedGroup ?? null, false);
+    }
+    this.syncUiFromSettings();
+    this.activePresetValue = selectedValue;
+    this.activePresetSnapshot = presetFromSettings(this.settings, this.activePinnedGroupId);
+    this.syncPresetSelectSelection();
+    this.applyInitialPresetFormation(initialFormation);
     this.setPresetStatus('Applied');
   }
 
+  private applyInitialPresetFormation(initialFormation: FactoryPresetInitialFormation | null) {
+    if (!initialFormation || initialFormation === 'random') {
+      return;
+    }
+
+    if (initialFormation === 'flash') {
+      this.requirePhysics().arrangeFlashParticles();
+      return;
+    }
+
+    this.arrangePresetNameParticles(false);
+  }
+
   private saveCurrentPreset() {
-    const index = Number(this.saveSlotSelect?.value);
-    if (!Number.isInteger(index) || index < 0 || index >= USER_PRESET_COUNT) {
+    const index = this.presetPanel?.selectedUserPresetSlot() ?? null;
+    if (index === null) {
       this.setPresetStatus('Choose save slot');
       return;
     }
@@ -1114,59 +1660,50 @@ export class DotpingApp {
     this.userPresets = saveUserPreset(
       this.userPresets,
       index,
-      this.saveNameInput?.value ?? '',
-      presetFromSettings(this.settings),
+      this.presetPanel?.saveName ?? '',
+      presetFromSettings(this.settings, this.activePinnedGroupId),
+      this.presetPanel?.formationLabel ?? '',
     );
     const selectedValue = `user:${index}`;
+    this.activePresetSnapshot = presetFromSettings(this.settings, this.activePinnedGroupId);
     this.renderPresetOptions(selectedValue);
     this.renderSaveDestinationOptions('');
     this.setPresetStatus(`Saved User ${index + 1}`);
   }
 
-  private syncSaveDestination() {
-    const index = Number(this.saveSlotSelect?.value);
-    const hasDestination = Number.isInteger(index) && index >= 0 && index < USER_PRESET_COUNT;
-
-    if (this.saveButton) {
-      this.saveButton.disabled = !hasDestination;
-    }
-
-    if (!this.saveNameInput) {
+  private deleteSelectedUserPreset() {
+    const index = this.presetPanel?.selectedUserPresetSlot() ?? null;
+    if (index === null || !this.userPresets[index]) {
+      this.setPresetStatus('Choose saved slot');
       return;
     }
 
-    if (!hasDestination) {
-      this.saveNameInput.value = '';
-      return;
+    const selectedValue = `user:${index}`;
+    this.userPresets = deleteUserPreset(this.userPresets, index);
+    if (this.activePresetValue === selectedValue) {
+      this.activePresetValue = 'custom';
+      this.activePresetSnapshot = null;
     }
-
-    this.saveNameInput.value = this.userPresets[index]?.name ?? `User ${index + 1}`;
+    this.renderPresetOptions(this.activePresetValue);
+    this.renderSaveDestinationOptions('');
+    this.setPresetStatus(`Deleted User ${index + 1}`);
   }
 
   private renderSaveDestinationOptions(selectedValue: string) {
-    if (!this.saveSlotSelect) {
-      return;
-    }
-
-    this.saveSlotSelect.replaceChildren();
-    const noDestination = document.createElement('option');
-    noDestination.value = '';
-    noDestination.textContent = 'Not selected';
-    this.saveSlotSelect.appendChild(noDestination);
-
-    for (let index = 0; index < USER_PRESET_COUNT; index += 1) {
-      const option = document.createElement('option');
-      option.value = `${index}`;
-      option.textContent = userSlotLabel(index, this.userPresets[index]);
-      this.saveSlotSelect.appendChild(option);
-    }
-
-    this.saveSlotSelect.value = selectedValue;
-    this.syncSaveDestination();
+    this.presetPanel?.renderSaveDestinationOptions(
+      selectedValue,
+      this.userPresets,
+      this.currentPresetFormationLabel(),
+    );
   }
 
   private exportCurrentPreset() {
-    const exportFile = createCurrentPresetExport('Current', this.settings);
+    const exportFile = createCurrentPresetExport(
+      this.currentPresetExportName(),
+      this.settings,
+      this.activePinnedGroupId,
+      this.currentPresetFormationLabel(),
+    );
     this.downloadPresetJson(exportFile, 'dotping-current-preset.json');
     this.setPresetStatus('Exported current');
   }
@@ -1219,8 +1756,8 @@ export class DotpingApp {
       return null;
     }
 
-    const selected = Number(this.saveSlotSelect?.value);
-    if (!Number.isInteger(selected) || selected < 0 || selected >= USER_PRESET_COUNT) {
+    const selected = this.presetPanel?.selectedUserPresetSlot() ?? null;
+    if (selected === null) {
       return null;
     }
     return selected;
@@ -1239,296 +1776,52 @@ export class DotpingApp {
   }
 
   private markPresetCustom(status = 'Custom') {
-    if (this.presetSelect) {
-      this.presetSelect.value = 'custom';
+    const currentPreset = presetFromSettings(this.settings, this.activePinnedGroupId);
+    if (
+      this.activePresetSnapshot &&
+      presetSettingsEqual(currentPreset, this.activePresetSnapshot)
+    ) {
+      this.syncPresetSelectSelection();
+      this.setPresetStatus('Applied');
+      return;
     }
+
+    if (this.activePresetSnapshot && this.activePresetValue !== 'custom') {
+      this.syncPresetSelectSelection();
+      this.setPresetStatus('Modified');
+      return;
+    }
+
+    this.activePresetValue = 'custom';
+    this.activePresetSnapshot = null;
+    this.syncPresetSelectSelection();
     this.setPresetStatus(status);
   }
 
+  private syncPresetSelectSelection() {
+    if (!this.presetPanel) {
+      return;
+    }
+
+    this.activePresetValue = this.presetPanel.syncPresetSelectSelection(
+      this.activePresetValue,
+    );
+  }
+
   private setPresetStatus(status: string) {
-    if (this.presetStatusEl) {
-      this.presetStatusEl.textContent = status;
-    }
+    this.presetPanel?.setStatus(status);
   }
 
-  private createRange(
-    labelText: string,
-    min: number,
-    max: number,
-    step: number,
-    initial: number,
-  ) {
-    const wrap = document.createElement('label');
-    wrap.className = 'hud__control';
-
-    const label = document.createElement('span');
-    label.textContent = labelText;
-
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = `${min}`;
-    input.max = `${max}`;
-    input.step = `${step}`;
-    input.value = `${initial}`;
-
-    const value = document.createElement('span');
-    value.className = 'hud__value';
-    value.textContent = `${initial}`;
-
-    wrap.append(label, input, value);
-    return { wrap, input, value };
-  }
-
-  private createSettingsGroup(
-    titleText: string,
-    accent: string,
-    controls: HTMLElement[],
-    titleAction?: HTMLElement | HTMLElement[],
-  ): HTMLDivElement {
-    const group = document.createElement('div');
-    group.className = `hud__group hud__group--${accent}`;
-
-    const header = document.createElement('div');
-    header.className = 'hud__group-header';
-
-    const title = document.createElement('span');
-    title.className = 'hud__group-title';
-    title.textContent = titleText;
-
-    header.append(title);
-    if (titleAction) {
-      const actionWrap = document.createElement('div');
-      actionWrap.className = 'hud__group-actions';
-      const actions = Array.isArray(titleAction) ? titleAction : [titleAction];
-      for (const action of actions) {
-        action.classList.add('hud__group-title-action');
-        actionWrap.append(action);
-      }
-      header.append(actionWrap);
-    }
-
-    group.append(header, ...controls);
-    return group;
-  }
-
-  private createDampingRange(labelText: string, initial: number) {
-    const control = this.createRange(
+  private createDampingRange(labelText: string, initial: number): RangeControl {
+    const control = createRange(
       labelText,
       0,
       DAMPING_UI_MAX,
       1,
-      this.sliderFromDamping(initial),
+      sliderFromDamping(initial),
     );
-    control.value.textContent = this.formatDamping(initial);
+    control.value.textContent = formatDamping(initial);
     return control;
-  }
-
-  private dampingFromSlider(sliderValue: number) {
-    const normalized = Math.max(0, Math.min(sliderValue / DAMPING_UI_MAX, 1));
-    return DAMPING_PHYSICS_MAX * normalized ** DAMPING_CURVE_POWER;
-  }
-
-  private sliderFromDamping(damping: number) {
-    const normalized = Math.max(0, Math.min(damping / DAMPING_PHYSICS_MAX, 1));
-    return Math.round(DAMPING_UI_MAX * normalized ** (1 / DAMPING_CURVE_POWER));
-  }
-
-  private formatDamping(damping: number) {
-    return damping < 1 ? damping.toFixed(3) : damping.toFixed(2);
-  }
-
-  private weightFromSlider(sliderValue: number) {
-    const normalized = Math.max(0, Math.min(sliderValue / WEIGHT_UI_MAX, 1));
-    const logMin = Math.log(WEIGHT_MIN);
-    const logMax = Math.log(WEIGHT_MAX);
-    return Math.exp(logMin + (logMax - logMin) * normalized);
-  }
-
-  private sliderFromWeight(weight: number) {
-    const clamped = Math.max(WEIGHT_MIN, Math.min(weight, WEIGHT_MAX));
-    const logMin = Math.log(WEIGHT_MIN);
-    const logMax = Math.log(WEIGHT_MAX);
-    return Math.round(WEIGHT_UI_MAX * ((Math.log(clamped) - logMin) / (logMax - logMin)));
-  }
-
-  private formatWeight(weight: number) {
-    if (weight < 1) {
-      return weight.toFixed(2);
-    }
-    if (weight < 10) {
-      return weight.toFixed(1);
-    }
-    return `${Math.round(weight)}`;
-  }
-
-  private controlBallSizeFromSlider(sliderValue: number) {
-    const size = this.logValueFromSlider(
-      sliderValue,
-      CONTROL_BALL_SIZE_MIN,
-      CONTROL_BALL_SIZE_MAX,
-    );
-    return Math.round(size);
-  }
-
-  private sliderFromControlBallSize(size: number) {
-    return this.sliderFromLogValue(size, CONTROL_BALL_SIZE_MIN, CONTROL_BALL_SIZE_MAX);
-  }
-
-  private formatControlBallSize(size: number) {
-    return `${Math.round(size)}`;
-  }
-
-  private brightnessResponseFromSlider(sliderValue: number) {
-    if (sliderValue <= 0) {
-      return 0;
-    }
-    return this.logValueFromSlider(
-      sliderValue,
-      PARTICLE_BRIGHTNESS_RESPONSE_MIN,
-      PARTICLE_BRIGHTNESS_RESPONSE_MAX,
-    );
-  }
-
-  private sliderFromBrightnessResponse(response: number) {
-    if (response <= 0) {
-      return 0;
-    }
-    return this.sliderFromLogValue(
-      response,
-      PARTICLE_BRIGHTNESS_RESPONSE_MIN,
-      PARTICLE_BRIGHTNESS_RESPONSE_MAX,
-    );
-  }
-
-  private formatBrightnessResponse(response: number) {
-    if (response <= 0) {
-      return '0.00x';
-    }
-    if (response < 10) {
-      return `${response.toFixed(2)}x`;
-    }
-    return `${response.toFixed(1)}x`;
-  }
-
-  private formatVividness(vividness: number) {
-    return `${vividness.toFixed(2)}x`;
-  }
-
-  private audioFrequencyFromSlider(sliderValue: number) {
-    return this.logValueFromSlider(sliderValue, AUDIO_FREQUENCY_MIN, AUDIO_FREQUENCY_MAX);
-  }
-
-  private sliderFromAudioFrequency(frequencyHz: number) {
-    return this.sliderFromLogValue(frequencyHz, AUDIO_FREQUENCY_MIN, AUDIO_FREQUENCY_MAX);
-  }
-
-  private formatAudioFrequency(frequencyHz: number) {
-    if (frequencyHz >= 9950) {
-      return '10kHz';
-    }
-    if (frequencyHz >= 1000) {
-      return `${(frequencyHz / 1000).toFixed(1)}kHz`;
-    }
-    return `${Math.round(frequencyHz)}Hz`;
-  }
-
-  private audioSpreadFromSlider(sliderValue: number) {
-    return this.logValueFromSlider(sliderValue, AUDIO_SPREAD_MIN, AUDIO_SPREAD_MAX);
-  }
-
-  private sliderFromAudioSpread(spread: number) {
-    return this.sliderFromLogValue(spread, AUDIO_SPREAD_MIN, AUDIO_SPREAD_MAX);
-  }
-
-  private formatAudioSpread(spread: number) {
-    return `${spread.toFixed(2)}x`;
-  }
-
-  private audioDurationFromSlider(sliderValue: number) {
-    return this.logValueFromSlider(sliderValue, AUDIO_DURATION_MIN, AUDIO_DURATION_MAX);
-  }
-
-  private sliderFromAudioDuration(durationMs: number) {
-    return this.sliderFromLogValue(durationMs, AUDIO_DURATION_MIN, AUDIO_DURATION_MAX);
-  }
-
-  private formatAudioDuration(durationMs: number) {
-    return `${Math.round(durationMs)}ms`;
-  }
-
-  private logValueFromSlider(sliderValue: number, min: number, max: number) {
-    const normalized = Math.max(0, Math.min(sliderValue / AUDIO_UI_MAX, 1));
-    const logMin = Math.log(min);
-    const logMax = Math.log(max);
-    return Math.exp(logMin + (logMax - logMin) * normalized);
-  }
-
-  private sliderFromLogValue(value: number, min: number, max: number) {
-    const clamped = Math.max(min, Math.min(value, max));
-    const logMin = Math.log(min);
-    const logMax = Math.log(max);
-    return Math.round(AUDIO_UI_MAX * ((Math.log(clamped) - logMin) / (logMax - logMin)));
-  }
-
-  private createSelect(labelText: string, values: number[], initial: number) {
-    const wrap = document.createElement('label');
-    wrap.className = 'hud__control hud__control--select';
-
-    const label = document.createElement('span');
-    label.textContent = labelText;
-
-    const input = document.createElement('select');
-    input.className = 'hud__select';
-    for (const value of values) {
-      const option = document.createElement('option');
-      option.value = `${value}`;
-      option.textContent = `${value}`;
-      input.appendChild(option);
-    }
-    input.value = `${initial}`;
-
-    wrap.append(label, input);
-    return { wrap, input };
-  }
-
-  private createTextSelect<T extends string>(
-    labelText: string,
-    values: Array<[T, string]>,
-    initial: T,
-  ) {
-    const wrap = document.createElement('label');
-    wrap.className = 'hud__control hud__control--select';
-
-    const label = document.createElement('span');
-    label.textContent = labelText;
-
-    const input = document.createElement('select');
-    input.className = 'hud__select';
-    for (const [value, text] of values) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = text;
-      input.appendChild(option);
-    }
-    input.value = initial;
-
-    wrap.append(label, input);
-    return { wrap, input };
-  }
-
-  private createToggle(labelText: string, initial: boolean) {
-    const wrap = document.createElement('label');
-    wrap.className = 'hud__toggle';
-
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.checked = initial;
-
-    const label = document.createElement('span');
-    label.textContent = labelText;
-
-    wrap.append(input, label);
-    return { wrap, input };
   }
 
   private updateDebug(deltaSeconds: number, impactCount: number) {
@@ -1544,33 +1837,32 @@ export class DotpingApp {
       return;
     }
 
-    const physics = this.requirePhysics();
-    const particleDiagnostics = physics.getParticleDiagnostics();
-    this.lastDebugText = [
-      'dotping_debug',
-      `fps=${Math.round(1 / Math.max(deltaSeconds, 0.001))}`,
-      `particle_model=${particleModelLabel(this.settings.collisionMode)}`,
-      `gravity=${gravityLabel(this.settings.gravityMode)}`,
-      `dots=${physics.particleCount}`,
-      `visible_dots=${particleDiagnostics.visible}`,
-      `out_of_bounds_dots=${particleDiagnostics.outOfBounds}`,
-      `nonfinite_dots=${particleDiagnostics.nonFinite}`,
-      `recovered_dots_last_step=${particleDiagnostics.recoveredLastStep}`,
-      `max_dot_speed=${particleDiagnostics.maxSpeed.toFixed(1)}`,
-      `max_out_distance=${particleDiagnostics.maxOutOfBoundsDistance.toFixed(1)}`,
-      `fixed_steps=${this.fixedStepsLastFrame}`,
-      `ms_per_step=${this.averageStepMs.toFixed(2)}`,
-      `rapier_length_unit=${this.lastStepMetrics.lengthUnit}`,
-      `collider_layout=${this.lastStepMetrics.colliderLayout}`,
-      `colliders=${this.lastStepMetrics.colliderCount}`,
-      `hits=${impactCount}`,
-      `voices=${this.audio.activeVoiceCount}`,
-    ].join('\n');
+    const debugLines = this.debugProfile === 'audio'
+      ? createAudioDebugLines(this.audio.getDiagnostics(), this.debugProfile)
+      : this.createPhysicsDebugLines(deltaSeconds, impactCount);
+    this.lastDebugText = debugLines.join('\n');
     this.debugEl.textContent = this.lastDebugText;
   }
 
+  private createPhysicsDebugLines(deltaSeconds: number, impactCount: number) {
+    const physics = this.requirePhysics();
+    return createPhysicsDebugTextLines({
+      profile: this.debugProfile,
+      deltaSeconds,
+      collisionMode: this.settings.collisionMode,
+      gravityMode: this.settings.gravityMode,
+      particleCount: physics.particleCount,
+      particleDiagnostics: physics.getParticleDiagnostics(),
+      fixedStepsLastFrame: this.fixedStepsLastFrame,
+      averageStepMs: this.averageStepMs,
+      lastStepMetrics: this.lastStepMetrics,
+      impactCount,
+      activeVoiceCount: this.audio.activeVoiceCount,
+    });
+  }
+
   private async copyDebugText(sourceButton?: HTMLButtonElement) {
-    const text = this.lastDebugText || 'dotping_debug\nstatus=not_available';
+    const text = this.lastDebugText || DEBUG_COPY_FALLBACK_TEXT;
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
@@ -1641,27 +1933,35 @@ export class DotpingApp {
   }
 }
 
-function particleModelLabel(mode: CollisionMode) {
-  return mode === 'collision-physical'
-    ? 'Physical collision'
-    : 'Independent overlap';
+function presetSettingsEqual(a: PresetSettings, b: PresetSettings) {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function gravityLabel(mode: GravityMode) {
-  switch (mode) {
-    case 'gravity':
-      return 'Gravity';
-    case 'antigravity':
-      return 'Anti-gravity';
-    case 'none':
-    default:
-      return 'Zero-G';
+function nextSettingsMenuSize(size: SettingsMenuSize): SettingsMenuSize {
+  const index = SETTINGS_MENU_SIZE_ORDER.indexOf(size);
+  return SETTINGS_MENU_SIZE_ORDER[(index + 1) % SETTINGS_MENU_SIZE_ORDER.length];
+}
+
+function settingsMenuSizeLabel(size: SettingsMenuSize) {
+  if (size === 'small') {
+    return 'Small';
   }
+  if (size === 'medium') {
+    return 'Medium';
+  }
+  return 'Large';
 }
 
-function userSlotLabel(index: number, preset: UserPreset | null | undefined) {
-  const slot = `User ${String(index + 1).padStart(2, '0')}`;
-  return preset ? `${slot}: ${preset.name}` : slot;
+function syncSelectValue(select: HTMLSelectElement, value: string | number) {
+  const nextValue = `${value}`;
+  if (!Array.from(select.options).some((option) => option.value === nextValue)) {
+    const option = document.createElement('option');
+    option.value = nextValue;
+    option.textContent = nextValue;
+    option.dataset.generated = 'true';
+    select.appendChild(option);
+  }
+  select.value = nextValue;
 }
 
 function settingsFromUrl(defaults: DotpingSettings): DotpingSettings {
@@ -1679,25 +1979,4 @@ function settingsFromUrl(defaults: DotpingSettings): DotpingSettings {
   }
 
   return settings;
-}
-
-function copyTextWithFallback(text: string) {
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', 'true');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  textarea.style.top = '0';
-  document.body.appendChild(textarea);
-  textarea.focus();
-  textarea.select();
-  textarea.setSelectionRange(0, textarea.value.length);
-
-  try {
-    return document.execCommand('copy');
-  } catch {
-    return false;
-  } finally {
-    textarea.remove();
-  }
 }
