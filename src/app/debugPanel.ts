@@ -64,10 +64,17 @@ export function createPhysicsDebugLines(snapshot: PhysicsDebugSnapshot) {
   ];
 }
 
-export function createAudioDebugLines(audio: AudioDiagnostics, profile: DebugProfile) {
+export function createAudioDebugLines(
+  audio: AudioDiagnostics,
+  profile: DebugProfile,
+  deltaSeconds?: number,
+) {
   return [
     'dotping_debug',
     `debug_profile=${profile}`,
+    ...(deltaSeconds === undefined
+      ? []
+      : [`fps=${Math.round(1 / Math.max(deltaSeconds, 0.001))}`]),
     `audio_enabled=${audio.enabled}`,
     `audio_context=${audio.contextState}`,
     `audio_resume=${audio.lastResumeStatus}`,
@@ -76,6 +83,7 @@ export function createAudioDebugLines(audio: AudioDiagnostics, profile: DebugPro
     `audio_resume_failures=${audio.resumeFailures}`,
     `audio_voice_release_fallbacks=${audio.voiceReleaseFallbacks}`,
     `audio_stolen_voices=${audio.stolenVoices}`,
+    `audio_stolen_per_sec=${audio.stolenVoicesPerSecond}`,
     `audio_steal_release_ms=${audio.stealReleaseMs.toFixed(1)}`,
     `audio_active_voices=${audio.activeVoices}`,
     `audio_max_voices=${audio.maxVoices}`,
@@ -83,8 +91,13 @@ export function createAudioDebugLines(audio: AudioDiagnostics, profile: DebugPro
     `audio_max_ball_voices=${audio.maxBallVoices}`,
     `audio_active_particle_voices=${audio.activeParticleVoices}`,
     `audio_max_particle_voices=${audio.maxParticleVoices}`,
+    `audio_trigger_test=${audio.triggerTestMode}`,
+    `audio_trigger_shape=${audio.triggerShape}`,
+    `audio_start_spread_ms=${audio.startSpreadMs.toFixed(1)}`,
     `audio_max_triggers_per_frame=${audio.maxTriggersPerFrame}`,
     `audio_reserved_ball_triggers=${audio.reservedBallTriggersPerFrame}`,
+    `audio_max_ball_triggers_per_frame=${audio.maxBallTriggersPerFrame}`,
+    `audio_max_particle_triggers_per_frame=${audio.maxParticleTriggersPerFrame}`,
     `audio_ball_wave=${audio.ballWaveform}`,
     `audio_ball_frequency_hz=${audio.ballFrequencyHz.toFixed(1)}`,
     `audio_ball_spread=${audio.ballFrequencySpread.toFixed(2)}`,
@@ -96,11 +109,16 @@ export function createAudioDebugLines(audio: AudioDiagnostics, profile: DebugPro
     `audio_particle_duration_ms=${audio.particleDurationMs.toFixed(1)}`,
     `audio_particle_frequency_cursor=${audio.particleFrequencyCursor}`,
     `audio_attack_ms=${audio.attackMs.toFixed(1)}`,
+    `audio_attack_curve=${audio.attackCurve}`,
     `audio_raw_impacts=${audio.lastRawImpacts}`,
     `audio_selected_impacts=${audio.lastSelectedImpacts}`,
     `audio_selected_ball_voices=${audio.lastSelectedBallVoices}`,
     `audio_selected_particle_voices=${audio.lastSelectedParticleVoices}`,
     `audio_started_voices=${audio.lastStartedVoices}`,
+    `audio_started_ball_voices=${audio.lastStartedBallVoices}`,
+    `audio_started_particle_voices=${audio.lastStartedParticleVoices}`,
+    `audio_stolen_ball_voices=${audio.lastStolenBallVoices}`,
+    `audio_stolen_particle_voices=${audio.lastStolenParticleVoices}`,
     `audio_skipped_voice_cap=${audio.lastSkippedVoiceCap}`,
     `audio_gain_min=${formatDiagnosticNumber(audio.lastGainMin, 4)}`,
     `audio_gain_max=${formatDiagnosticNumber(audio.lastGainMax, 4)}`,

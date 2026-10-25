@@ -1,5 +1,15 @@
 import type { ImpactEvent } from '../sim/physicsWorld';
 import type { AudioWaveform, DotpingSettings } from '../sim/settings';
+import {
+  computeStartOffsets,
+  resolveAttackShape,
+  resolveTriggerTiming,
+  type AttackCurve,
+  type AttackTestMode,
+  type StealFadeMs,
+  type TriggerShape,
+  type TriggerTestMode,
+} from './triggerTiming';
 
 type AudioTuning = Pick<
   DotpingSettings,
@@ -11,6 +21,7 @@ type AudioTuning = Pick<
   | 'audioParticleFrequencyHz'
   | 'audioParticleFrequencySpread'
   | 'audioParticleDurationMs'
+  | 'audioTriggerSpreadMs'
 >;
 
 export type AudioDiagnostics = {
@@ -22,6 +33,7 @@ export type AudioDiagnostics = {
   resumeFailures: number;
   voiceReleaseFallbacks: number;
   stolenVoices: number;
+  stolenVoicesPerSecond: number;
   stealReleaseMs: number;
   activeVoices: number;
   maxVoices: number;
@@ -29,8 +41,13 @@ export type AudioDiagnostics = {
   maxBallVoices: number;
   activeParticleVoices: number;
   maxParticleVoices: number;
+  triggerTestMode: TriggerTestMode;
+  triggerShape: TriggerShape;
+  startSpreadMs: number;
   maxTriggersPerFrame: number;
   reservedBallTriggersPerFrame: number;
+  maxBallTriggersPerFrame: number;
+  maxParticleTriggersPerFrame: number;
   ballWaveform: AudioWaveform;
   ballFrequencyHz: number;
   ballFrequencySpread: number;
@@ -42,11 +59,16 @@ export type AudioDiagnostics = {
   particleDurationMs: number;
   particleFrequencyCursor: number;
   attackMs: number;
+  attackCurve: AttackCurve;
   lastRawImpacts: number;
   lastSelectedImpacts: number;
   lastSelectedBallVoices: number;
   lastSelectedParticleVoices: number;
   lastStartedVoices: number;
+  lastStartedBallVoices: number;
+  lastStartedParticleVoices: number;
+  lastStolenBallVoices: number;
+  lastStolenParticleVoices: number;
   lastSkippedVoiceCap: number;
   lastGainMin: number;
   lastGainMax: number;
@@ -69,6 +91,10 @@ type FrameAudioDiagnostics = Pick<
   | 'lastSelectedBallVoices'
   | 'lastSelectedParticleVoices'
   | 'lastStartedVoices'
+  | 'lastStartedBallVoices'
+  | 'lastStartedParticleVoices'
+  | 'lastStolenBallVoices'
+  | 'lastStolenParticleVoices'
   | 'lastSkippedVoiceCap'
   | 'lastGainMin'
   | 'lastGainMax'
@@ -95,6 +121,7 @@ type AudioFamily = 'ball' | 'particle';
 type VoiceRequest = {
   family: AudioFamily;
   impact: ImpactEvent;
+  impactIndex: number;
 };
 
 type FamilyTuning = {
@@ -114,8 +141,7 @@ const MIN_DURATION_MS = 1;
 const MAX_DURATION_MS = 1000;
 const FREQUENCY_TABLE_SIZE = 18;
 const SILENCE_GAIN = 0.0001;
-const ATTACK_SECONDS = 0.001;
-const VOICE_STEAL_RELEASE_SECONDS = 0;
+const STOLEN_RATE_WINDOW_MS = 1000;
 const MIN_IMPACT_GAIN = 0.0001;
 const MAX_IMPACT_GAIN = 0.05;
 const TABLE_SHAPE = [
@@ -135,6 +161,12 @@ export class AudioEngine {
   private readonly maxParticleVoices = 16;
   private readonly maxTriggersPerFrame = 8;
   private readonly maxBallTriggersPerFrame = 1;
+  private startSpreadMs = 0;
+  private triggerTestMode: TriggerTestMode = 'preset';
+  private stealReleaseSeconds = 0;
+  private attackTestMode: AttackTestMode = 'exp-1';
+  private stolenTimestamps: number[] = [];
+  private frameSequence = 0;
   private lastResumeStatus: AudioDiagnostics['lastResumeStatus'] = 'not_requested';
   private resumeAttempts = 0;
   private resumeSuccesses = 0;
@@ -173,15 +205,21 @@ export class AudioEngine {
       resumeFailures: this.resumeFailures,
       voiceReleaseFallbacks: this.voiceReleaseFallbacks,
       stolenVoices: this.stolenVoices,
-      stealReleaseMs: VOICE_STEAL_RELEASE_SECONDS * 1000,
+      stolenVoicesPerSecond: this.stolenVoicesPerSecond(),
+      stealReleaseMs: this.stealReleaseSeconds * 1000,
       activeVoices: this.voices,
       maxVoices: this.maxVoices,
       activeBallVoices: this.activeVoiceCountByFamily('ball'),
       maxBallVoices: this.maxBallVoices,
       activeParticleVoices: this.activeVoiceCountByFamily('particle'),
       maxParticleVoices: this.maxParticleVoices,
+      triggerTestMode: this.triggerTestMode,
+      triggerShape: this.triggerTiming().shape,
+      startSpreadMs: this.triggerTiming().spreadMs,
       maxTriggersPerFrame: this.maxTriggersPerFrame,
       reservedBallTriggersPerFrame: this.maxBallTriggersPerFrame,
+      maxBallTriggersPerFrame: this.maxBallTriggersPerFrame,
+      maxParticleTriggersPerFrame: Math.max(0, this.maxTriggersPerFrame - this.maxBallTriggersPerFrame),
       ballWaveform: this.ballTuning.waveform,
       ballFrequencyHz: this.ballTuning.frequencyHz,
       ballFrequencySpread: this.ballTuning.frequencySpread,
@@ -192,12 +230,17 @@ export class AudioEngine {
       particleFrequencySpread: this.particleTuning.frequencySpread,
       particleDurationMs: this.particleTuning.durationSeconds * 1000,
       particleFrequencyCursor: this.particleTuning.frequencyCursor,
-      attackMs: ATTACK_SECONDS * 1000,
+      attackMs: resolveAttackShape(this.attackTestMode).ms,
+      attackCurve: resolveAttackShape(this.attackTestMode).curve,
       lastRawImpacts: this.lastFrame.lastRawImpacts,
       lastSelectedImpacts: this.lastFrame.lastSelectedImpacts,
       lastSelectedBallVoices: this.lastFrame.lastSelectedBallVoices,
       lastSelectedParticleVoices: this.lastFrame.lastSelectedParticleVoices,
       lastStartedVoices: this.lastFrame.lastStartedVoices,
+      lastStartedBallVoices: this.lastFrame.lastStartedBallVoices,
+      lastStartedParticleVoices: this.lastFrame.lastStartedParticleVoices,
+      lastStolenBallVoices: this.lastFrame.lastStolenBallVoices,
+      lastStolenParticleVoices: this.lastFrame.lastStolenParticleVoices,
       lastSkippedVoiceCap: this.lastFrame.lastSkippedVoiceCap,
       lastGainMin: this.lastFrame.lastGainMin,
       lastGainMax: this.lastFrame.lastGainMax,
@@ -218,6 +261,42 @@ export class AudioEngine {
     this.enabled = enabled;
   }
 
+  setStartSpreadMs(spreadMs: number) {
+    this.startSpreadMs = clamp(spreadMs, 0, 16);
+  }
+
+  getStartSpreadMs() {
+    return this.startSpreadMs;
+  }
+
+  setTriggerTestMode(mode: TriggerTestMode) {
+    this.triggerTestMode = mode;
+  }
+
+  setStealFadeMs(fadeMs: StealFadeMs) {
+    this.stealReleaseSeconds = Math.max(fadeMs, 0) / 1000;
+  }
+
+  setAttackTestMode(mode: AttackTestMode) {
+    this.attackTestMode = mode;
+  }
+
+  private triggerTiming() {
+    return resolveTriggerTiming(this.triggerTestMode, this.startSpreadMs);
+  }
+
+  private stolenVoicesPerSecond() {
+    const cutoff = performance.now() - STOLEN_RATE_WINDOW_MS;
+    let first = 0;
+    while (first < this.stolenTimestamps.length && this.stolenTimestamps[first] < cutoff) {
+      first += 1;
+    }
+    if (first > 0) {
+      this.stolenTimestamps.splice(0, first);
+    }
+    return this.stolenTimestamps.length;
+  }
+
   setTuning(settings: AudioTuning) {
     this.ballTuning = updateFamilyTuning(this.ballTuning, {
       waveform: settings.audioBallWaveform,
@@ -231,6 +310,7 @@ export class AudioEngine {
       frequencySpread: settings.audioParticleFrequencySpread,
       durationMs: settings.audioParticleDurationMs,
     });
+    this.setStartSpreadMs(settings.audioTriggerSpreadMs);
   }
 
   unlock() {
@@ -292,6 +372,7 @@ export class AudioEngine {
       return;
     }
 
+    const startOffsets = this.voiceStartOffsets(selected);
     const gains: number[] = [];
     for (let index = 0; index < selected.length; index += 1) {
       const request = selected[index];
@@ -315,8 +396,17 @@ export class AudioEngine {
         }
         return;
       }
-      gains.push(this.playPing(context, request));
+      gains.push(this.playPing(
+        context,
+        request,
+        startOffsets.get(request.impactIndex) ?? 0,
+      ));
       this.lastFrame.lastStartedVoices += 1;
+      if (request.family === 'ball') {
+        this.lastFrame.lastStartedBallVoices += 1;
+      } else {
+        this.lastFrame.lastStartedParticleVoices += 1;
+      }
     }
 
     this.recordGainDiagnostics(gains);
@@ -331,6 +421,12 @@ export class AudioEngine {
     const entries = impacts
       .map((impact, index) => ({ impact, index }))
       .sort((a, b) => b.impact.energy - a.impact.energy);
+    return this.selectFrameCapVoiceRequests(entries);
+  }
+
+  private selectFrameCapVoiceRequests(
+    entries: Array<{ impact: ImpactEvent; index: number }>,
+  ) {
     const selected: VoiceRequest[] = [];
     const selectedKeys = new Set<string>();
 
@@ -347,7 +443,7 @@ export class AudioEngine {
         return false;
       }
 
-      selected.push({ family, impact: entry.impact });
+      selected.push({ family, impact: entry.impact, impactIndex: entry.index });
       selectedKeys.add(key);
       return true;
     };
@@ -385,10 +481,11 @@ export class AudioEngine {
     return requests.filter((request) => request.family === family).length;
   }
 
-  private playPing(context: AudioContext, request: VoiceRequest) {
+  private playPing(context: AudioContext, request: VoiceRequest, startOffsetSeconds: number) {
     this.voices += 1;
 
     const now = context.currentTime;
+    const startTime = now + Math.max(startOffsetSeconds, 0);
     const { family, impact } = request;
     const tuning = this.tuningForFamily(family);
     const duration = tuning.durationSeconds;
@@ -402,7 +499,7 @@ export class AudioEngine {
       filter,
       gain,
       fallbackTimer: 0,
-      startedAt: now,
+      startedAt: startTime,
       durationSeconds: duration,
       volume: 0,
       released: false,
@@ -417,24 +514,31 @@ export class AudioEngine {
 
     const volume = impactVolume(impact.energy);
     voice.volume = volume;
-    const attackEnd = now + Math.min(ATTACK_SECONDS, duration);
+    const attack = resolveAttackShape(this.attackTestMode);
+    const attackEnd = startTime + Math.min(attack.ms / 1000, duration);
     gain.gain.setValueAtTime(SILENCE_GAIN, now);
-    gain.gain.exponentialRampToValueAtTime(volume, attackEnd);
-    if (attackEnd < now + duration) {
-      gain.gain.exponentialRampToValueAtTime(SILENCE_GAIN, now + duration);
+    if (attack.curve === 'linear') {
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(volume, attackEnd);
+    } else {
+      gain.gain.setValueAtTime(SILENCE_GAIN, startTime);
+      gain.gain.exponentialRampToValueAtTime(volume, attackEnd);
+    }
+    if (attackEnd < startTime + duration) {
+      gain.gain.exponentialRampToValueAtTime(SILENCE_GAIN, startTime + duration);
     }
 
     oscillator.connect(filter);
     filter.connect(gain);
     gain.connect(context.destination);
 
-    oscillator.start(now);
-    oscillator.stop(now + duration);
+    oscillator.start(startTime);
+    oscillator.stop(startTime + duration);
     this.activeVoices.push(voice);
     oscillator.addEventListener('ended', () => this.releaseVoice(voice, false));
     voice.fallbackTimer = window.setTimeout(
       () => this.releaseVoice(voice, true),
-      Math.ceil(duration * 1000) + 250,
+      Math.ceil((startOffsetSeconds + duration) * 1000) + 250,
     );
 
     return volume;
@@ -458,6 +562,16 @@ export class AudioEngine {
 
   private activeVoiceCountByFamily(family: AudioFamily) {
     return this.activeVoices.filter((voice) => voice.family === family).length;
+  }
+
+  private voiceStartOffsets(selected: VoiceRequest[]) {
+    const offsets = computeStartOffsets(
+      selected.map((request) => request.impactIndex),
+      this.triggerTiming(),
+      this.frameSequence,
+    );
+    this.frameSequence += 1;
+    return offsets;
   }
 
   private recordSelectedEnergyDiagnostics(selected: ImpactEvent[]) {
@@ -500,21 +614,34 @@ export class AudioEngine {
     }
 
     this.stolenVoices += 1;
+    this.stolenTimestamps.push(performance.now());
+    if (family === 'ball') {
+      this.lastFrame.lastStolenBallVoices += 1;
+    } else {
+      this.lastFrame.lastStolenParticleVoices += 1;
+    }
     const now = context.currentTime;
-    const releaseEnd = now + Math.max(VOICE_STEAL_RELEASE_SECONDS, 0);
+    const releaseSeconds = this.stealReleaseSeconds;
+    const releaseEnd = now + releaseSeconds;
+    const param = voice.gain.gain;
     try {
-      voice.gain.gain.cancelScheduledValues(now);
-      if (VOICE_STEAL_RELEASE_SECONDS <= 0) {
-        voice.gain.gain.setValueAtTime(0, now);
+      if (releaseSeconds <= 0) {
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(0, now);
+      } else if (typeof param.cancelAndHoldAtTime === 'function') {
+        // Hold the actual automated gain so the ramp starts without a jump.
+        param.cancelAndHoldAtTime(now);
+        param.linearRampToValueAtTime(0, releaseEnd);
       } else {
-        voice.gain.gain.setValueAtTime(this.estimateVoiceGain(voice, now), now);
-        voice.gain.gain.linearRampToValueAtTime(0, releaseEnd);
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(this.estimateVoiceGain(voice, now), now);
+        param.linearRampToValueAtTime(0, releaseEnd);
       }
       voice.oscillator.stop(releaseEnd);
     } catch {
       this.releaseVoice(voice, false);
     }
-    this.releaseVoice(voice, false, Math.ceil(VOICE_STEAL_RELEASE_SECONDS * 1000) + 20);
+    this.releaseVoice(voice, false, Math.ceil(releaseSeconds * 1000) + 20);
     return true;
   }
 
@@ -582,6 +709,10 @@ function createEmptyFrameDiagnostics(): FrameAudioDiagnostics {
     lastSelectedBallVoices: 0,
     lastSelectedParticleVoices: 0,
     lastStartedVoices: 0,
+    lastStartedBallVoices: 0,
+    lastStartedParticleVoices: 0,
+    lastStolenBallVoices: 0,
+    lastStolenParticleVoices: 0,
     lastSkippedVoiceCap: 0,
     lastGainMin: 0,
     lastGainMax: 0,

@@ -98,15 +98,21 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
     resumeFailures: 1,
     voiceReleaseFallbacks: 3,
     stolenVoices: 4,
-    stealReleaseMs: 0,
+    stolenVoicesPerSecond: 3,
+    stealReleaseMs: 2,
     activeVoices: 18,
     maxVoices: 20,
     activeBallVoices: 2,
     maxBallVoices: 4,
     activeParticleVoices: 16,
     maxParticleVoices: 16,
+    triggerTestMode: 'random-8',
+    triggerShape: 'random',
+    startSpreadMs: 8,
     maxTriggersPerFrame: 8,
     reservedBallTriggersPerFrame: 1,
+    maxBallTriggersPerFrame: 1,
+    maxParticleTriggersPerFrame: 7,
     ballWaveform: 'triangle',
     ballFrequencyHz: 440,
     ballFrequencySpread: 1.234,
@@ -117,12 +123,17 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
     particleFrequencySpread: 1,
     particleDurationMs: 12.34,
     particleFrequencyCursor: 7,
-    attackMs: 1,
+    attackMs: 2,
+    attackCurve: 'linear',
     lastRawImpacts: 20,
     lastSelectedImpacts: 8,
     lastSelectedBallVoices: 1,
     lastSelectedParticleVoices: 7,
     lastStartedVoices: 6,
+    lastStartedBallVoices: 1,
+    lastStartedParticleVoices: 5,
+    lastStolenBallVoices: 1,
+    lastStolenParticleVoices: 4,
     lastSkippedVoiceCap: 2,
     lastGainMin: Number.NaN,
     lastGainMax: 0.05,
@@ -141,10 +152,22 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
   assert.equal(lines[0], 'dotping_debug');
   assert.equal(lines[1], 'debug_profile=audio');
   assert.ok(lines.includes('audio_context=running'));
+  assert.ok(lines.includes('audio_start_spread_ms=8.0'));
+  assert.ok(lines.includes('audio_trigger_test=random-8'));
+  assert.ok(lines.includes('audio_trigger_shape=random'));
+  assert.ok(lines.includes('audio_attack_ms=2.0'));
+  assert.ok(lines.includes('audio_attack_curve=linear'));
+  assert.ok(lines.includes('audio_stolen_per_sec=3'));
+  assert.ok(lines.includes('audio_steal_release_ms=2.0'));
+  assert.ok(!lines.some((line) => line.startsWith('fps=')));
+  assert.ok(lines.includes('audio_max_ball_triggers_per_frame=1'));
+  assert.ok(lines.includes('audio_max_particle_triggers_per_frame=7'));
   assert.ok(lines.includes('audio_ball_frequency_hz=440.0'));
   assert.ok(lines.includes('audio_ball_spread=1.23'));
   assert.ok(lines.includes('audio_particle_duration_ms=12.3'));
   assert.ok(lines.includes('audio_gain_min=n/a'));
+  assert.ok(lines.includes('audio_started_ball_voices=1'));
+  assert.ok(lines.includes('audio_stolen_particle_voices=4'));
   assert.ok(lines.includes('audio_energy_min=n/a'));
   assert.ok(lines.includes('audio_possible_clip=true'));
   assert.equal(lines.at(-1), 'silent_voice_cap_full=13');

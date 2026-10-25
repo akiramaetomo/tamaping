@@ -31,6 +31,7 @@ export type DotCombiMode = 'off' | 'velocity';
 export type GravityMode = 'none' | 'gravity' | 'antigravity';
 export type ColliderLayout = 'split' | 'single';
 export type AudioWaveform = 'sine' | 'triangle' | 'sawtooth' | 'square';
+export type AudioTriggerSpreadMs = 0 | 16;
 
 export type DotpingSettings = {
   collisionMode: CollisionMode;
@@ -70,6 +71,7 @@ export type DotpingSettings = {
   audioParticleFrequencyHz: number;
   audioParticleFrequencySpread: number;
   audioParticleDurationMs: number;
+  audioTriggerSpreadMs: AudioTriggerSpreadMs;
   debug: boolean;
 };
 
@@ -111,5 +113,6 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   audioParticleFrequencyHz: 4000,
   audioParticleFrequencySpread: 1,
   audioParticleDurationMs: 150,
+  audioTriggerSpreadMs: 0,
   debug: false,
 };

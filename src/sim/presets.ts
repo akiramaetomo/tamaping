@@ -14,7 +14,7 @@ export type { FactoryPresetInitialFormation } from './factoryPresetData';
 
 export const FACTORY_PRESET_COUNT = 30;
 export const USER_PRESET_COUNT = 30;
-export const PRESET_EXPORT_SCHEMA_VERSION = 7;
+export const PRESET_EXPORT_SCHEMA_VERSION = 8;
 
 const USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v1';
 const EXPORT_KIND = 'dotping-presets';
@@ -96,6 +96,7 @@ type PresetTuningSettings = Pick<
   | 'audioParticleFrequencyHz'
   | 'audioParticleFrequencySpread'
   | 'audioParticleDurationMs'
+  | 'audioTriggerSpreadMs'
 >;
 
 type LegacySharedAudioPresetSettings = {
@@ -147,6 +148,7 @@ function factoryPreset(
     settings: {
       ...DEFAULT_PRESET,
       ...settings,
+      audioTriggerSpreadMs: 16,
     },
   };
 }
@@ -201,6 +203,7 @@ export function presetFromSettings(
     audioParticleFrequencyHz: settings.audioParticleFrequencyHz,
     audioParticleFrequencySpread: settings.audioParticleFrequencySpread,
     audioParticleDurationMs: settings.audioParticleDurationMs,
+    audioTriggerSpreadMs: settings.audioTriggerSpreadMs,
   };
 }
 
@@ -567,6 +570,10 @@ function normalizePresetSettings(value: unknown): PresetSettings {
       1,
       1000,
     ),
+    audioTriggerSpreadMs: audioTriggerSpreadValue(
+      source.audioTriggerSpreadMs,
+      base.audioTriggerSpreadMs,
+    ),
   };
 
   if (Object.prototype.hasOwnProperty.call(source, 'pinnedGroup')) {
@@ -630,6 +637,10 @@ function pinnedGroupValue(value: unknown): PresetPinnedGroup {
   return value === null || PINNED_GROUPS.includes(value as (typeof PINNED_GROUPS)[number])
     ? (value as PresetPinnedGroup)
     : null;
+}
+
+function audioTriggerSpreadValue(value: unknown, fallback: 0 | 16) {
+  return value === 0 || value === 16 ? value : fallback;
 }
 
 function finiteNumber(value: unknown, fallback: number) {

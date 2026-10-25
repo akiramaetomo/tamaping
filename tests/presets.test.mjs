@@ -40,6 +40,7 @@ test('factory and user preset capacities match the curated release set', () => {
   assert.equal(FACTORY_PRESETS[29].name.startsWith('✦'), true);
   assert.equal(FACTORY_PRESETS.some((preset) => preset.name.includes('Pink Sand Scream')), false);
   assert.equal(FACTORY_PRESETS.some((preset) => preset.name.includes('Jelly Synth')), true);
+  assert.equal(FACTORY_PRESETS.every((preset) => preset.settings.audioTriggerSpreadMs === 16), true);
   assert.deepEqual(
     FACTORY_PRESETS.reduce(
       (counts, preset) => ({
@@ -63,6 +64,7 @@ test('current preset export preserves tunable settings and excludes runtime togg
       particleCount: 321,
       particleRadius: 64,
       particleRimWidth: 75,
+      audioTriggerSpreadMs: 16,
     },
     'audio',
     '  Show Name  ',
@@ -76,6 +78,7 @@ test('current preset export preserves tunable settings and excludes runtime togg
   assert.equal(exportFile.presets[0].settings.particleCount, 321);
   assert.equal(exportFile.presets[0].settings.particleRadius, 64);
   assert.equal(exportFile.presets[0].settings.particleRimWidth, 75);
+  assert.equal(exportFile.presets[0].settings.audioTriggerSpreadMs, 16);
   assert.equal('particleFillEnabled' in exportFile.presets[0].settings, false);
   assert.equal('soundEnabled' in exportFile.presets[0].settings, false);
   assert.equal('debug' in exportFile.presets[0].settings, false);
@@ -98,6 +101,7 @@ test('preset import normalizes legacy audio fields, invalid choices, and numeric
         audioFrequencyHz: 20,
         audioFrequencySpread: 3,
         audioDurationMs: 0,
+        audioTriggerSpreadMs: 99,
         audioBallWaveform: 'bad-wave',
         audioParticleWaveform: 'square',
         controlBallPalette: 'pink-glow',
@@ -124,6 +128,7 @@ test('preset import normalizes legacy audio fields, invalid choices, and numeric
   assert.equal(preset.settings.audioParticleFrequencySpread, 2);
   assert.equal(preset.settings.audioBallDurationMs, 1);
   assert.equal(preset.settings.audioParticleDurationMs, 1);
+  assert.equal(preset.settings.audioTriggerSpreadMs, DEFAULT_SETTINGS.audioTriggerSpreadMs);
   assert.equal(preset.settings.audioBallWaveform, DEFAULT_SETTINGS.audioBallWaveform);
   assert.equal(preset.settings.audioParticleWaveform, 'square');
   assert.equal(preset.settings.controlBallPalette, 'pink');
@@ -138,11 +143,13 @@ test('preset import fills missing particle rim width as pseudo-fill for legacy p
         particlePalette: 'blue',
         particleRadius: 8,
         particleFillEnabled: true,
+        audioTriggerSpreadMs: 16,
       },
     },
   ]));
 
   assert.equal(preset.settings.particleRimWidth, 100);
+  assert.equal(preset.settings.audioTriggerSpreadMs, 16);
   assert.equal('particleFillEnabled' in preset.settings, false);
 });
 

@@ -1,4 +1,12 @@
 import { AudioEngine } from '../audio/audioEngine';
+import {
+  ATTACK_TEST_OPTIONS,
+  STEAL_FADE_OPTIONS,
+  TRIGGER_TEST_OPTIONS,
+  type AttackTestMode,
+  type StealFadeMs,
+  type TriggerTestMode,
+} from '../audio/triggerTiming';
 import { PixiRenderer } from '../render/pixiRenderer';
 import {
   DotpingPhysicsWorld,
@@ -23,6 +31,7 @@ import {
 } from '../sim/presets';
 import {
   DEFAULT_SETTINGS,
+  type AudioTriggerSpreadMs,
   type AudioWaveform,
   type BallPalette,
   type CollisionMode,
@@ -899,6 +908,44 @@ export class DotpingApp {
       this.requirePhysics().setDiagnosticsEnabled(debug.input.checked);
     });
 
+    const triggerSpread = createTextSelect<AudioTriggerSpreadMs>(
+      'Trigger Spread',
+      [
+        [0, 'Tight 0ms'],
+        [16, 'Spread 16ms'],
+      ],
+      this.settings.audioTriggerSpreadMs,
+    );
+    triggerSpread.input.title = 'Spread selected same-frame audio triggers across a small window';
+    triggerSpread.input.addEventListener('change', () => {
+      this.updateSettings({
+        audioTriggerSpreadMs: Number(triggerSpread.input.value) as AudioTriggerSpreadMs,
+      }, false);
+    });
+
+    // Audio research comparison controls: session-only, not saved and not in presets.
+    const triggerTest = createTextSelect<TriggerTestMode>(
+      'Trigger Test',
+      TRIGGER_TEST_OPTIONS,
+      'preset',
+    );
+    triggerTest.input.title = 'Override the Trigger Spread timing shape for comparison (not saved)';
+    triggerTest.input.addEventListener('change', () => {
+      this.audio.setTriggerTestMode(triggerTest.input.value as TriggerTestMode);
+    });
+
+    const stealFade = createTextSelect<StealFadeMs>('Steal Fade', STEAL_FADE_OPTIONS, 0);
+    stealFade.input.title = 'Fade-out length for stolen voices, for comparison (not saved)';
+    stealFade.input.addEventListener('change', () => {
+      this.audio.setStealFadeMs(Number(stealFade.input.value) as StealFadeMs);
+    });
+
+    const attackTest = createTextSelect<AttackTestMode>('Attack', ATTACK_TEST_OPTIONS, 'exp-1');
+    attackTest.input.title = 'Attack ramp shape for new voices, for comparison (not saved)';
+    attackTest.input.addEventListener('change', () => {
+      this.audio.setAttackTestMode(attackTest.input.value as AttackTestMode);
+    });
+
     const copyDebug = document.createElement('button');
     copyDebug.className = 'hud__button';
     copyDebug.type = 'button';
@@ -968,9 +1015,13 @@ export class DotpingApp {
       audioTabs,
       audioBallPanel,
       audioParticlePanel,
+      triggerSpread.wrap,
     ], [sound.wrap, audioPin]);
     const utilityGroup = createSettingsGroup('Utility', 'utility', [
       debug.wrap,
+      triggerTest.wrap,
+      stealFade.wrap,
+      attackTest.wrap,
       copyDebug,
       reset,
     ]);
@@ -1077,6 +1128,7 @@ export class DotpingApp {
       syncAudioPanel();
       sound.input.checked = this.settings.soundEnabled;
       debug.input.checked = this.settings.debug;
+      triggerSpread.input.value = `${this.settings.audioTriggerSpreadMs}`;
       syncLinkingOptions();
     };
     syncLinkingOptions();
@@ -1135,8 +1187,16 @@ export class DotpingApp {
       }
     });
 
-    canvas.addEventListener('pointerup', (event) => this.releasePointer(event));
+    // Touch pointerdown does not grant user activation; touch pointerup does.
+    canvas.addEventListener('pointerup', (event) => {
+      this.audio.unlock();
+      this.releasePointer(event);
+    });
     canvas.addEventListener('pointercancel', (event) => this.releasePointer(event));
+
+    // iPadOS shows its text loupe on long press even with user-select: none.
+    // Pointer events still fire after the touch default is cancelled.
+    canvas.addEventListener('touchstart', (event) => event.preventDefault(), { passive: false });
 
     window.addEventListener('resize', () => {
       const renderer = this.requireRenderer();
@@ -1838,7 +1898,7 @@ export class DotpingApp {
     }
 
     const debugLines = this.debugProfile === 'audio'
-      ? createAudioDebugLines(this.audio.getDiagnostics(), this.debugProfile)
+      ? createAudioDebugLines(this.audio.getDiagnostics(), this.debugProfile, deltaSeconds)
       : this.createPhysicsDebugLines(deltaSeconds, impactCount);
     this.lastDebugText = debugLines.join('\n');
     this.debugEl.textContent = this.lastDebugText;
