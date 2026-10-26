@@ -100,13 +100,19 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
     stolenVoices: 4,
     stolenVoicesPerSecond: 3,
     stealReleaseMs: 2,
+    lookaheadMs: 20,
+    contextSampleRate: 44100,
+    baseLatencyMs: 10,
+    outputLatencyMs: Number.NaN,
+    clockStepMs: 10.1587,
+    clockStepMaxMs: 20.3,
     activeVoices: 18,
     maxVoices: 20,
     activeBallVoices: 2,
     maxBallVoices: 4,
     activeParticleVoices: 16,
     maxParticleVoices: 16,
-    triggerTestMode: 'random-8',
+    triggerTestMode: 'random-step',
     triggerShape: 'random',
     startSpreadMs: 8,
     maxTriggersPerFrame: 8,
@@ -153,12 +159,18 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
   assert.equal(lines[1], 'debug_profile=audio');
   assert.ok(lines.includes('audio_context=running'));
   assert.ok(lines.includes('audio_start_spread_ms=8.0'));
-  assert.ok(lines.includes('audio_trigger_test=random-8'));
+  assert.ok(lines.includes('audio_trigger_test=random-step'));
   assert.ok(lines.includes('audio_trigger_shape=random'));
   assert.ok(lines.includes('audio_attack_ms=2.0'));
   assert.ok(lines.includes('audio_attack_curve=linear'));
   assert.ok(lines.includes('audio_stolen_per_sec=3'));
   assert.ok(lines.includes('audio_steal_release_ms=2.0'));
+  assert.ok(lines.includes('audio_lookahead_ms=20.0'));
+  assert.ok(lines.includes('audio_sample_rate=44100'));
+  assert.ok(lines.includes('audio_base_latency_ms=10.0'));
+  assert.ok(lines.includes('audio_output_latency_ms=n/a'));
+  assert.ok(lines.includes('audio_clock_step_ms=10.16'));
+  assert.ok(lines.includes('audio_clock_step_max_ms=20.30'));
   assert.ok(!lines.some((line) => line.startsWith('fps=')));
   assert.ok(lines.includes('audio_max_ball_triggers_per_frame=1'));
   assert.ok(lines.includes('audio_max_particle_triggers_per_frame=7'));

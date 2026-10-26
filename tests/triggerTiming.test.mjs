@@ -2,19 +2,32 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  ATTACK_TEST_OPTIONS,
+  DEFAULT_ATTACK_TEST_MODE,
+  DEFAULT_LOOKAHEAD_MS,
+  DEFAULT_STEAL_FADE_MS,
+  DEFAULT_TRIGGER_TEST_MODE,
+  LOOKAHEAD_OPTIONS,
+  STEAL_FADE_OPTIONS,
+  TRIGGER_TEST_OPTIONS,
   computeStartOffsets,
   resolveAttackShape,
   resolveTriggerTiming,
 } from '../.test-build/audio/triggerTiming.js';
 
 test('trigger test modes resolve to shape and window', () => {
-  assert.deepEqual(resolveTriggerTiming('preset', 0), { shape: 'tight', spreadMs: 0 });
-  assert.deepEqual(resolveTriggerTiming('preset', 16), { shape: 'even', spreadMs: 16 });
-  assert.deepEqual(resolveTriggerTiming('tight-0', 16), { shape: 'tight', spreadMs: 0 });
-  assert.deepEqual(resolveTriggerTiming('even-16', 0), { shape: 'even', spreadMs: 16 });
-  assert.deepEqual(resolveTriggerTiming('random-16', 0), { shape: 'random', spreadMs: 16 });
-  assert.deepEqual(resolveTriggerTiming('random-step', 0), { shape: 'random', spreadMs: 1000 / 60 });
-  assert.deepEqual(resolveTriggerTiming('random-8', 16), { shape: 'random', spreadMs: 8 });
+  assert.deepEqual(TRIGGER_TEST_OPTIONS.map(([mode]) => mode), ['tight-0', 'even-16', 'random-step']);
+  assert.equal(DEFAULT_TRIGGER_TEST_MODE, 'random-step');
+  assert.deepEqual(resolveTriggerTiming('tight-0'), { shape: 'tight', spreadMs: 0 });
+  assert.deepEqual(resolveTriggerTiming('even-16'), { shape: 'even', spreadMs: 16 });
+  assert.deepEqual(resolveTriggerTiming('random-step'), { shape: 'random', spreadMs: 1000 / 60 });
+});
+
+test('utility audio tuning defaults to 1ms steal fade and linear 1ms attack', () => {
+  assert.equal(DEFAULT_STEAL_FADE_MS, 1);
+  assert.equal(DEFAULT_ATTACK_TEST_MODE, 'linear-1');
+  assert.ok(STEAL_FADE_OPTIONS.some(([value]) => value === DEFAULT_STEAL_FADE_MS));
+  assert.ok(ATTACK_TEST_OPTIONS.some(([value]) => value === DEFAULT_ATTACK_TEST_MODE));
 });
 
 test('tight timing starts every impact at zero', () => {
@@ -65,9 +78,15 @@ test('a single impact always starts immediately', () => {
   }
 });
 
-test('attack test modes keep exponential 1ms as the default shape', () => {
+test('attack test modes resolve to curve and length', () => {
   assert.deepEqual(resolveAttackShape('exp-1'), { curve: 'exponential', ms: 1 });
   assert.deepEqual(resolveAttackShape('linear-1'), { curve: 'linear', ms: 1 });
   assert.deepEqual(resolveAttackShape('linear-2'), { curve: 'linear', ms: 2 });
   assert.deepEqual(resolveAttackShape('linear-4'), { curve: 'linear', ms: 4 });
+});
+
+test('lookahead defaults to 20ms and keeps 0ms for comparison', () => {
+  assert.deepEqual(LOOKAHEAD_OPTIONS.map(([value]) => value), [0, 10, 20, 30, 50]);
+  assert.equal(DEFAULT_LOOKAHEAD_MS, 20);
+  assert.ok(LOOKAHEAD_OPTIONS.some(([value]) => value === DEFAULT_LOOKAHEAD_MS));
 });

@@ -165,6 +165,22 @@ export class DotpingPhysicsWorld {
     }
   }
 
+  // Same jittered-grid scatter that a freshly built scene starts with.
+  arrangeRandomParticles() {
+    if (this.particles.length <= 0) {
+      return;
+    }
+
+    const positions = this.particlePositions();
+    const count = Math.min(this.particles.length, positions.length);
+    for (let index = 0; index < count; index += 1) {
+      const particle = this.particles[index];
+      const position = positions[index];
+      particle.setTranslation({ x: position.x, y: position.y }, true);
+      particle.setLinvel({ x: position.vx, y: position.vy }, true);
+    }
+  }
+
   arrangeParticlesToTargets(targets: ParticleFormationTarget[]) {
     if (this.particles.length <= 0 || targets.length <= 0) {
       return false;

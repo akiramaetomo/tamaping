@@ -1,11 +1,16 @@
 import type { ImpactEvent } from '../sim/physicsWorld';
 import type { AudioWaveform, DotpingSettings } from '../sim/settings';
 import {
+  DEFAULT_ATTACK_TEST_MODE,
+  DEFAULT_LOOKAHEAD_MS,
+  DEFAULT_STEAL_FADE_MS,
+  DEFAULT_TRIGGER_TEST_MODE,
   computeStartOffsets,
   resolveAttackShape,
   resolveTriggerTiming,
   type AttackCurve,
   type AttackTestMode,
+  type LookaheadMs,
   type StealFadeMs,
   type TriggerShape,
   type TriggerTestMode,
@@ -35,6 +40,12 @@ export type AudioDiagnostics = {
   stolenVoices: number;
   stolenVoicesPerSecond: number;
   stealReleaseMs: number;
+  lookaheadMs: number;
+  contextSampleRate: number;
+  baseLatencyMs: number;
+  outputLatencyMs: number;
+  clockStepMs: number;
+  clockStepMaxMs: number;
   activeVoices: number;
   maxVoices: number;
   activeBallVoices: number;
@@ -142,6 +153,7 @@ const MAX_DURATION_MS = 1000;
 const FREQUENCY_TABLE_SIZE = 18;
 const SILENCE_GAIN = 0.0001;
 const STOLEN_RATE_WINDOW_MS = 1000;
+const CLOCK_STEP_HISTORY = 120;
 const MIN_IMPACT_GAIN = 0.0001;
 const MAX_IMPACT_GAIN = 0.05;
 const TABLE_SHAPE = [
@@ -161,10 +173,12 @@ export class AudioEngine {
   private readonly maxParticleVoices = 16;
   private readonly maxTriggersPerFrame = 8;
   private readonly maxBallTriggersPerFrame = 1;
-  private startSpreadMs = 0;
-  private triggerTestMode: TriggerTestMode = 'preset';
-  private stealReleaseSeconds = 0;
-  private attackTestMode: AttackTestMode = 'exp-1';
+  private triggerTestMode: TriggerTestMode = DEFAULT_TRIGGER_TEST_MODE;
+  private stealReleaseSeconds = DEFAULT_STEAL_FADE_MS / 1000;
+  private attackTestMode: AttackTestMode = DEFAULT_ATTACK_TEST_MODE;
+  private lookaheadSeconds = DEFAULT_LOOKAHEAD_MS / 1000;
+  private lastObservedContextTime = -1;
+  private clockSteps: number[] = [];
   private stolenTimestamps: number[] = [];
   private frameSequence = 0;
   private lastResumeStatus: AudioDiagnostics['lastResumeStatus'] = 'not_requested';
@@ -207,6 +221,14 @@ export class AudioEngine {
       stolenVoices: this.stolenVoices,
       stolenVoicesPerSecond: this.stolenVoicesPerSecond(),
       stealReleaseMs: this.stealReleaseSeconds * 1000,
+      lookaheadMs: this.lookaheadSeconds * 1000,
+      contextSampleRate: this.context?.sampleRate ?? 0,
+      baseLatencyMs: (this.context?.baseLatency ?? Number.NaN) * 1000,
+      outputLatencyMs: (this.context?.outputLatency ?? Number.NaN) * 1000,
+      clockStepMs: (this.clockSteps[this.clockSteps.length - 1] ?? Number.NaN) * 1000,
+      clockStepMaxMs: this.clockSteps.length > 0
+        ? Math.max(...this.clockSteps) * 1000
+        : Number.NaN,
       activeVoices: this.voices,
       maxVoices: this.maxVoices,
       activeBallVoices: this.activeVoiceCountByFamily('ball'),
@@ -261,14 +283,6 @@ export class AudioEngine {
     this.enabled = enabled;
   }
 
-  setStartSpreadMs(spreadMs: number) {
-    this.startSpreadMs = clamp(spreadMs, 0, 16);
-  }
-
-  getStartSpreadMs() {
-    return this.startSpreadMs;
-  }
-
   setTriggerTestMode(mode: TriggerTestMode) {
     this.triggerTestMode = mode;
   }
@@ -281,8 +295,25 @@ export class AudioEngine {
     this.attackTestMode = mode;
   }
 
+  setLookaheadMs(lookaheadMs: LookaheadMs) {
+    this.lookaheadSeconds = Math.max(lookaheadMs, 0) / 1000;
+  }
+
+  // Records how far `currentTime` moves between frames. Its granularity shows
+  // the audio chunk size seen by the main thread on this device.
+  private observeContextClock(context: AudioContext) {
+    const time = context.currentTime;
+    if (this.lastObservedContextTime >= 0 && time > this.lastObservedContextTime) {
+      this.clockSteps.push(time - this.lastObservedContextTime);
+      if (this.clockSteps.length > CLOCK_STEP_HISTORY) {
+        this.clockSteps.shift();
+      }
+    }
+    this.lastObservedContextTime = time;
+  }
+
   private triggerTiming() {
-    return resolveTriggerTiming(this.triggerTestMode, this.startSpreadMs);
+    return resolveTriggerTiming(this.triggerTestMode);
   }
 
   private stolenVoicesPerSecond() {
@@ -310,7 +341,6 @@ export class AudioEngine {
       frequencySpread: settings.audioParticleFrequencySpread,
       durationMs: settings.audioParticleDurationMs,
     });
-    this.setStartSpreadMs(settings.audioTriggerSpreadMs);
   }
 
   unlock() {
@@ -340,6 +370,9 @@ export class AudioEngine {
       ...createEmptyFrameDiagnostics(),
       lastRawImpacts: impacts.length,
     };
+    if (this.context) {
+      this.observeContextClock(this.context);
+    }
 
     if (!this.enabled) {
       if (impacts.length > 0) {
@@ -373,11 +406,14 @@ export class AudioEngine {
     }
 
     const startOffsets = this.voiceStartOffsets(selected);
+    // Every event of this frame is scheduled from one anchor that lies ahead of
+    // audio the browser may already have rendered.
+    const anchor = context.currentTime + this.lookaheadSeconds;
     const gains: number[] = [];
     for (let index = 0; index < selected.length; index += 1) {
       const request = selected[index];
       if (this.activeVoiceCountByFamily(request.family) >= this.maxVoicesForFamily(request.family)) {
-        const stoleVoice = this.stealVoiceForFamily(context, request.family);
+        const stoleVoice = this.stealVoiceForFamily(request.family, anchor);
         if (!stoleVoice) {
           this.lastFrame.lastSkippedVoiceCap = selected.length - index;
           this.recordGainDiagnostics(gains);
@@ -399,6 +435,7 @@ export class AudioEngine {
       gains.push(this.playPing(
         context,
         request,
+        anchor,
         startOffsets.get(request.impactIndex) ?? 0,
       ));
       this.lastFrame.lastStartedVoices += 1;
@@ -481,11 +518,16 @@ export class AudioEngine {
     return requests.filter((request) => request.family === family).length;
   }
 
-  private playPing(context: AudioContext, request: VoiceRequest, startOffsetSeconds: number) {
+  private playPing(
+    context: AudioContext,
+    request: VoiceRequest,
+    anchor: number,
+    startOffsetSeconds: number,
+  ) {
     this.voices += 1;
 
     const now = context.currentTime;
-    const startTime = now + Math.max(startOffsetSeconds, 0);
+    const startTime = anchor + Math.max(startOffsetSeconds, 0);
     const { family, impact } = request;
     const tuning = this.tuningForFamily(family);
     const duration = tuning.durationSeconds;
@@ -538,7 +580,7 @@ export class AudioEngine {
     oscillator.addEventListener('ended', () => this.releaseVoice(voice, false));
     voice.fallbackTimer = window.setTimeout(
       () => this.releaseVoice(voice, true),
-      Math.ceil((startOffsetSeconds + duration) * 1000) + 250,
+      Math.ceil((startTime - now + duration) * 1000) + 250,
     );
 
     return volume;
@@ -607,7 +649,7 @@ export class AudioEngine {
     this.lastFrame.lastGainAverage = total / gains.length;
   }
 
-  private stealVoiceForFamily(context: AudioContext, family: AudioFamily) {
+  private stealVoiceForFamily(family: AudioFamily, anchor: number) {
     const voice = this.oldestVoiceByFamily(family);
     if (!voice) {
       return false;
@@ -620,7 +662,7 @@ export class AudioEngine {
     } else {
       this.lastFrame.lastStolenParticleVoices += 1;
     }
-    const now = context.currentTime;
+    const now = anchor;
     const releaseSeconds = this.stealReleaseSeconds;
     const releaseEnd = now + releaseSeconds;
     const param = voice.gain.gain;
@@ -641,7 +683,12 @@ export class AudioEngine {
     } catch {
       this.releaseVoice(voice, false);
     }
-    this.releaseVoice(voice, false, Math.ceil(releaseSeconds * 1000) + 20);
+    // Disconnect only after the scheduled fade, which starts at the anchor.
+    this.releaseVoice(
+      voice,
+      false,
+      Math.ceil((this.lookaheadSeconds + releaseSeconds) * 1000) + 20,
+    );
     return true;
   }
 

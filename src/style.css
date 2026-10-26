@@ -2,6 +2,17 @@
   box-sizing: border-box;
 }
 
+/* Settings card accents, shared by the cards and the My Panel source colours. */
+:root {
+  --accent-preset: #8ee8d0;
+  --accent-mode: #9ccfff;
+  --accent-ball: #c6b7ff;
+  --accent-particles: #91e2c9;
+  --accent-interaction: #ffb4c0;
+  --accent-audio: #ffd689;
+  --accent-utility: #cdd9e8;
+}
+
 html,
 body,
 #app {
@@ -71,27 +82,18 @@ button:disabled {
   backdrop-filter: blur(5px);
   opacity: 0;
   pointer-events: none;
+  max-height: 40vh;
+  max-height: 40dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   transform: translateY(calc(100% + 12px));
   transition:
     opacity 140ms ease-out,
     transform 160ms ease-out;
 }
 
-.hud.hud--compact {
-  max-height: min(44vh, 380px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  -webkit-overflow-scrolling: touch;
-}
 
-.hud.hud--small {
-  max-height: min(17vh, 140px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  -webkit-overflow-scrolling: touch;
-}
 
 .hud--open {
   opacity: 1;
@@ -162,7 +164,7 @@ button:disabled {
   z-index: 1;
   min-height: 28px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px 28px;
+  grid-template-columns: minmax(0, 1fr) 28px;
   gap: 8px;
   align-items: center;
   grid-column: 1 / -1;
@@ -173,11 +175,90 @@ button:disabled {
   backdrop-filter: blur(7px);
 }
 
-.hud__header-title {
+.hud__tabs {
+  position: relative;
   min-width: 0;
-  color: #dceaff;
-  font-size: 15px;
-  font-weight: 700;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.hud__tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.hud__tab {
+  flex: none;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgb(206 229 255 / 20%);
+  border-radius: 999px;
+  background: rgb(14 20 32 / 70%);
+  color: rgb(220 234 255 / 78%);
+  font-size: 13px;
+  white-space: nowrap;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.hud__tab:hover {
+  border-color: rgb(206 229 255 / 44%);
+  color: #edf4ff;
+}
+
+.hud__tab[aria-selected="true"] {
+  border-color: rgb(142 232 208 / 62%);
+  background: rgb(13 62 52 / 88%);
+  color: #ecfff9;
+}
+
+.hud__tab[data-tab="my"] {
+  color: #d6f08e;
+}
+
+.hud__tab[data-tab="my"][aria-selected="true"] {
+  border-color: rgb(214 240 142 / 66%);
+  background: rgb(46 58 18 / 90%);
+  color: #f1ffc9;
+}
+
+.hud__tab[data-tab="preset"] { --tab-accent: var(--accent-preset); }
+.hud__tab[data-tab="mode"] { --tab-accent: var(--accent-mode); }
+.hud__tab[data-tab="ball"] { --tab-accent: var(--accent-ball); }
+.hud__tab[data-tab="particles"] { --tab-accent: var(--accent-particles); }
+.hud__tab[data-tab="interaction"] { --tab-accent: var(--accent-interaction); }
+.hud__tab[data-tab="audio"] { --tab-accent: var(--accent-audio); }
+.hud__tab[data-tab="utility"] { --tab-accent: var(--accent-utility); }
+
+/* Card tabs use the same accent as their card, like the My tab. */
+.hud__tab[data-tab]:is(
+  [data-tab="preset"], [data-tab="mode"], [data-tab="ball"], [data-tab="particles"],
+  [data-tab="interaction"], [data-tab="audio"], [data-tab="utility"]
+) {
+  color: var(--tab-accent);
+}
+
+.hud__tab[data-tab]:is(
+  [data-tab="preset"], [data-tab="mode"], [data-tab="ball"], [data-tab="particles"],
+  [data-tab="interaction"], [data-tab="audio"], [data-tab="utility"]
+)[aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--tab-accent) 66%, transparent);
+  background: color-mix(in srgb, var(--tab-accent) 24%, rgb(10 15 24 / 90%));
+  color: color-mix(in srgb, var(--tab-accent) 35%, #ffffff);
+}
+
+.hud__tab:focus-visible {
+  outline: 2px solid rgb(142 232 208 / 82%);
+  outline-offset: 1px;
+}
+
+.hud > .is-tab-hidden {
+  display: none;
 }
 
 .hud__icon-button {
@@ -200,38 +281,10 @@ button:disabled {
     transform 80ms ease;
 }
 
-.hud__height-toggle::before {
-  content: "";
-  width: 14px;
-  height: 10px;
-  border-top: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  box-shadow: inset 0 5px 0 -3px currentColor;
-}
 
-.hud__height-toggle[data-size="small"] {
-  border-color: rgb(142 232 208 / 58%);
-  background: rgb(13 62 52 / 88%);
-  color: #ecfff9;
-}
 
-.hud__height-toggle[data-size="small"]::before {
-  height: 4px;
-  border-top-width: 2px;
-  border-bottom-width: 0;
-  box-shadow: none;
-}
 
-.hud__height-toggle[data-size="medium"] {
-  border-color: rgb(142 232 208 / 58%);
-  background: rgb(13 62 52 / 88%);
-  color: #ecfff9;
-}
 
-.hud__height-toggle[data-size="medium"]::before {
-  height: 7px;
-  box-shadow: none;
-}
 
 .hud__select,
 .hud__button {
@@ -316,9 +369,15 @@ button:disabled {
 
 .hud__preset-title {
   grid-column: 1 / -1;
-  color: #8ee8d0;
+  color: var(--accent-preset);
   font-size: 14px;
   font-weight: 700;
+}
+
+.hud__preset-select-row {
+  grid-column: 1 / -1;
+  display: grid;
+  min-width: 0;
 }
 
 .hud__preset-select {
@@ -450,6 +509,9 @@ button:disabled {
 
 .pinned-settings {
   position: fixed;
+  display: grid;
+  gap: 6px;
+  align-content: start;
   left: 50%;
   bottom: max(12px, env(safe-area-inset-bottom));
   z-index: 3;
@@ -561,38 +623,155 @@ button:disabled {
 .hud__group--mode {
   --group-border: rgb(132 191 255 / 32%);
   --group-bg: rgb(8 17 32 / 70%);
-  --group-accent: #9ccfff;
+  --group-accent: var(--accent-mode);
 }
 
 .hud__group--ball {
   --group-border: rgb(179 156 255 / 32%);
   --group-bg: rgb(18 14 34 / 68%);
-  --group-accent: #c6b7ff;
+  --group-accent: var(--accent-ball);
 }
 
 .hud__group--particles {
   --group-border: rgb(121 219 189 / 32%);
   --group-bg: rgb(8 28 25 / 66%);
-  --group-accent: #91e2c9;
+  --group-accent: var(--accent-particles);
 }
 
 .hud__group--interaction {
   --group-border: rgb(255 158 174 / 32%);
   --group-bg: rgb(35 13 20 / 64%);
-  --group-accent: #ffb4c0;
+  --group-accent: var(--accent-interaction);
 }
 
 .hud__group--audio {
   --group-border: rgb(255 214 137 / 34%);
   --group-bg: rgb(26 20 12 / 68%);
-  --group-accent: #ffd689;
+  --group-accent: var(--accent-audio);
   --group-text: #fff3dc;
+}
+
+.pinned-settings .hud__group--my {
+  --group-bg: rgb(22 28 10 / 24%);
+}
+
+.hud__group--my {
+  --group-border: rgb(214 240 142 / 34%);
+  --group-bg: rgb(22 28 10 / 66%);
+  --group-accent: #d6f08e;
+}
+
+.hud__my-items {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.hud__my-items[hidden],
+.hud__my-hint[hidden] {
+  display: none;
+}
+
+.hud__my-items .hud__control:not(.hud__control--select) {
+  grid-template-columns: minmax(112px, 0.9fr) minmax(96px, 1.1fr) 42px;
+}
+
+.hud__my-items [data-source="preset"] { --source-accent: var(--accent-preset); }
+.hud__my-items [data-source="mode"] { --source-accent: var(--accent-mode); }
+.hud__my-items [data-source="ball"] { --source-accent: var(--accent-ball); }
+.hud__my-items [data-source="particles"] { --source-accent: var(--accent-particles); }
+.hud__my-items [data-source="interaction"] { --source-accent: var(--accent-interaction); }
+.hud__my-items [data-source="audio"] { --source-accent: var(--accent-audio); }
+.hud__my-items [data-source="utility"] { --source-accent: var(--accent-utility); }
+
+/* Only the label text takes the source colour, so values and inputs stay readable. */
+.hud__my-items [data-source] > span:not(.hud__value),
+.hud__my-items [data-source] > .hud__button {
+  color: var(--source-accent);
+}
+
+.hud__my-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 6px;
+}
+
+.hud__my-hint {
+  margin: 0;
+  color: rgb(220 234 255 / 64%);
+  font-size: 13px;
+}
+
+.hud__action {
+  display: grid;
+  min-width: 0;
+}
+
+.hud__pickable {
+  position: relative;
+}
+
+/* Sits in the card padding or row gap, so rows keep their size and layout. */
+.hud__pick {
+  position: absolute;
+  left: -13px;
+  top: 50%;
+  z-index: 1;
+  width: 18px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  transform: translateY(-50%);
+}
+
+.hud__pick::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border: 1px solid rgb(206 229 255 / 40%);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.hud__pick:hover::before {
+  border-color: rgb(214 240 142 / 80%);
+}
+
+.hud__pick[aria-pressed="true"]::before {
+  border-color: #d6f08e;
+  background: #d6f08e;
+  box-shadow: 0 0 6px rgb(214 240 142 / 46%);
+}
+
+.hud__pick:disabled {
+  cursor: default;
+}
+
+.hud__pick:disabled::before {
+  border-color: rgb(206 229 255 / 14%);
+}
+
+.hud__pick:focus-visible {
+  outline: 2px solid rgb(142 232 208 / 82%);
+  outline-offset: -2px;
+}
+
+.pinned-settings .hud__pick {
+  display: none;
 }
 
 .hud__group--utility {
   --group-border: rgb(206 229 255 / 22%);
   --group-bg: rgb(12 16 23 / 62%);
-  --group-accent: #cdd9e8;
+  --group-accent: var(--accent-utility);
 }
 
 .hud__control,
@@ -658,8 +837,14 @@ button:disabled {
 }
 
 .hud__link-leader {
-  grid-column: 2;
+  grid-column: 1;
   min-height: 30px;
+}
+
+.hud__link-random {
+  grid-column: 2;
+  justify-self: end;
+  min-width: 68px;
 }
 
 .hud__link-flash {
@@ -712,31 +897,49 @@ button:disabled {
 }
 
 @media (min-width: 761px) {
+  .hud.hud--single {
+    left: max(10px, calc(50% - 390px));
+    right: max(10px, calc(50% - 390px));
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hud.hud--single > .hud__preset,
+  .hud.hud--single > .hud__group {
+    grid-column: 1 / -1;
+  }
+
+  .hud__tab {
+    min-height: 30px;
+    padding: 0 10px;
+    font-size: 15px;
+  }
+
+  .hud__my-items {
+    gap: 4px;
+  }
+
+  .hud__my-items .hud__control:not(.hud__control--select) {
+    grid-template-columns: minmax(170px, 0.5fr) minmax(235px, 1fr) 72px;
+  }
+
+  .hud__my-hint {
+    font-size: 15px;
+  }
+
   .hud {
-    max-height: min(90vh, 860px);
     grid-template-columns: repeat(auto-fit, minmax(280px, 340px));
     align-items: stretch;
     gap: 8px;
     overflow-y: auto;
   }
 
-  .hud.hud--compact {
-    max-height: min(44vh, 420px);
-  }
 
-  .hud.hud--small {
-    max-height: min(17vh, 150px);
-  }
 
   .hud__preset {
     grid-column: span 2;
     min-height: 156px;
     gap: 4px 6px;
     padding-bottom: 6px;
-  }
-
-  .hud__header-title {
-    font-size: 19px;
   }
 
   .hud__preset-title,
@@ -797,6 +1000,10 @@ button:disabled {
     grid-template-columns: minmax(160px, 0.45fr) minmax(384px, 1.55fr);
     grid-template-rows: auto;
     gap: 4px 8px;
+  }
+
+  .hud__link-random {
+    min-width: 86px;
   }
 
   .hud__link-options {
@@ -921,7 +1128,6 @@ button:disabled {
     right: 0;
     bottom: 0;
     z-index: 4;
-    max-height: min(72vh, 560px);
     grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-content: stretch;
     overflow-y: auto;
@@ -933,13 +1139,7 @@ button:disabled {
     border-radius: 8px 8px 0 0;
   }
 
-  .hud.hud--compact {
-    max-height: min(44vh, 360px);
-  }
 
-  .hud.hud--small {
-    max-height: min(20vh, 160px);
-  }
 
   .hud__select,
   .hud__button,
@@ -972,5 +1172,16 @@ button:disabled {
     width: auto;
     max-height: min(42vh, 340px);
     transform: none;
+  }
+}
+
+/* Phones: the short "Preset" label leaves room for a wider preset list in My Panel. */
+@media (max-width: 760px) {
+  .hud__my-items [data-source="preset"].hud__control--select {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .hud__my-items [data-source="preset"] .hud__select {
+    max-width: none;
   }
 }

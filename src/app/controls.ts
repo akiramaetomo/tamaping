@@ -135,6 +135,66 @@ export function createSettingsGroup(
   return group;
 }
 
+// Absolutely positioned in the host's left padding so the host layout does not change.
+export function attachPickButton(host: HTMLElement, label: string, onClick: () => void) {
+  const button = document.createElement('button');
+  button.className = 'hud__pick';
+  button.type = 'button';
+  button.setAttribute('aria-pressed', 'false');
+  button.dataset.label = label;
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onClick();
+  });
+  host.classList.add('hud__pickable');
+  host.append(button);
+  return button;
+}
+
+export function createSettingsTabs<T extends string>(
+  tabs: ReadonlyArray<readonly [T, string]>,
+  onSelect: (id: T) => void,
+) {
+  const element = document.createElement('div');
+  element.className = 'hud__tabs';
+  element.setAttribute('role', 'tablist');
+  element.setAttribute('aria-label', 'Settings sections');
+  const buttons = new Map<T, HTMLButtonElement>();
+  for (const [id, text] of tabs) {
+    const button = document.createElement('button');
+    button.className = 'hud__tab';
+    button.type = 'button';
+    button.textContent = text;
+    button.dataset.tab = id;
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-selected', 'false');
+    button.addEventListener('click', () => onSelect(id));
+    buttons.set(id, button);
+    element.append(button);
+  }
+
+  const select = (id: T) => {
+    for (const [buttonId, button] of buttons) {
+      button.setAttribute('aria-selected', `${buttonId === id}`);
+    }
+    // Scroll only the tab strip; scrollIntoView could also move the settings panel.
+    const button = buttons.get(id);
+    if (!button) {
+      return;
+    }
+    const start = button.offsetLeft;
+    const end = start + button.offsetWidth;
+    if (start < element.scrollLeft) {
+      element.scrollLeft = start;
+    } else if (end > element.scrollLeft + element.clientWidth) {
+      element.scrollLeft = end - element.clientWidth;
+    }
+  };
+
+  return { element, select };
+}
+
 export function createPinButton<T extends string>(
   id: T,
   title: string,

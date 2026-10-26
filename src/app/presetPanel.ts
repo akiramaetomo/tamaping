@@ -17,6 +17,10 @@ type PresetPanelCallbacks = {
 
 export class PresetPanel {
   readonly element: HTMLDivElement;
+  // Hosts the My Panel pick marker, which cannot be nested inside the select.
+  readonly selectRow: HTMLSpanElement;
+  // Bumped whenever the preset list changes, so My Panel copies refill only then.
+  optionsVersion = 0;
 
   private readonly presetSelect: HTMLSelectElement;
   private readonly saveSlotSelect: HTMLSelectElement;
@@ -47,6 +51,9 @@ export class PresetPanel {
     this.presetSelect.addEventListener('change', () => {
       callbacks.onPresetChange(this.presetSelect.value);
     });
+    this.selectRow = document.createElement('span');
+    this.selectRow.className = 'hud__preset-select-row';
+    this.selectRow.append(this.presetSelect);
 
     const saveLabel = document.createElement('span');
     saveLabel.className = 'hud__preset-save-label';
@@ -129,7 +136,7 @@ export class PresetPanel {
 
     wrap.append(
       title,
-      this.presetSelect,
+      this.selectRow,
       saveLabel,
       this.saveSlotSelect,
       this.saveNameInput,
@@ -162,35 +169,8 @@ export class PresetPanel {
 
   renderPresetOptions(selectedValue: string, userPresets: Array<UserPreset | null>) {
     this.userPresets = userPresets;
-    this.presetSelect.replaceChildren();
-
-    const custom = document.createElement('option');
-    custom.value = 'custom';
-    custom.textContent = 'Custom tuning';
-    custom.disabled = true;
-    this.presetSelect.appendChild(custom);
-
-    const factoryGroup = document.createElement('optgroup');
-    factoryGroup.label = 'Factory Presets';
-    for (const [index, preset] of FACTORY_PRESETS.entries()) {
-      const option = document.createElement('option');
-      option.value = `factory:${preset.id}`;
-      option.textContent = factorySlotLabel(index, preset.name, preset.formationLabel);
-      factoryGroup.appendChild(option);
-    }
-    this.presetSelect.appendChild(factoryGroup);
-
-    const userGroup = document.createElement('optgroup');
-    userGroup.label = 'User Presets';
-    for (let index = 0; index < USER_PRESET_COUNT; index += 1) {
-      const preset = userPresets[index];
-      const option = document.createElement('option');
-      option.value = `user:${index}`;
-      option.textContent = preset ? userSlotLabel(index, preset) : `${userSlotPrefix(index)} (empty)`;
-      option.disabled = !preset;
-      userGroup.appendChild(option);
-    }
-    this.presetSelect.appendChild(userGroup);
+    fillPresetOptions(this.presetSelect, userPresets);
+    this.optionsVersion += 1;
     this.syncPresetSelectSelection(selectedValue);
   }
 
@@ -253,6 +233,49 @@ export class PresetPanel {
       'hud__preset-status--modified',
       status === 'Modified',
     );
+  }
+}
+
+export function fillPresetOptions(
+  select: HTMLSelectElement,
+  userPresets: Array<UserPreset | null>,
+) {
+  select.replaceChildren();
+
+  const custom = document.createElement('option');
+  custom.value = 'custom';
+  custom.textContent = 'Custom tuning';
+  custom.disabled = true;
+  select.appendChild(custom);
+
+  const factoryGroup = document.createElement('optgroup');
+  factoryGroup.label = 'Factory Presets';
+  for (const [index, preset] of FACTORY_PRESETS.entries()) {
+    const option = document.createElement('option');
+    option.value = `factory:${preset.id}`;
+    option.textContent = factorySlotLabel(index, preset.name, preset.formationLabel);
+    factoryGroup.appendChild(option);
+  }
+  select.appendChild(factoryGroup);
+
+  const userGroup = document.createElement('optgroup');
+  userGroup.label = 'User Presets';
+  for (let index = 0; index < USER_PRESET_COUNT; index += 1) {
+    const preset = userPresets[index];
+    const option = document.createElement('option');
+    option.value = `user:${index}`;
+    option.textContent = preset ? userSlotLabel(index, preset) : `${userSlotPrefix(index)} (empty)`;
+    option.disabled = !preset;
+    userGroup.appendChild(option);
+  }
+  select.appendChild(userGroup);
+}
+
+// Mirrors PresetPanel.syncPresetSelectSelection for selects outside the Preset card.
+export function syncPresetSelectValue(select: HTMLSelectElement, activePresetValue: string) {
+  select.value = activePresetValue;
+  if (select.value !== activePresetValue) {
+    select.value = 'custom';
   }
 }
 
