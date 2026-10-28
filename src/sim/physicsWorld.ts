@@ -140,8 +140,17 @@ export class DotpingPhysicsWorld {
     this.syncControlBallPresence();
   }
 
-  resize(width: number, height: number) {
+  // `remap` maps body positions proportionally to the new size (View Scale
+  // `Fit`); otherwise bodies keep their positions and are clamped (`1:1`).
+  resize(width: number, height: number, remap = false) {
     const preserved = this.captureState();
+    if (preserved && remap) {
+      const sx = width / Math.max(this.widthValue, 1);
+      const sy = height / Math.max(this.heightValue, 1);
+      const map = (state: BodyState): BodyState => ({ ...state, x: state.x * sx, y: state.y * sy });
+      preserved.control = map(preserved.control);
+      preserved.particles = preserved.particles.map(map);
+    }
     this.widthValue = width;
     this.heightValue = height;
     this.rebuild(preserved);

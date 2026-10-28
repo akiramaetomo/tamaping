@@ -135,6 +135,14 @@ test('preset import normalizes legacy audio fields, invalid choices, and numeric
   assert.equal(preset.settings.pinnedGroup, null);
 });
 
+test('preset import accepts My Panel as a pinned group', () => {
+  const [preset] = parsePresetExport(JSON.stringify([
+    { name: 'Pins My Panel', settings: { pinnedGroup: 'my' } },
+  ]));
+
+  assert.equal(preset.settings.pinnedGroup, 'my');
+});
+
 test('preset import fills missing particle rim width as pseudo-fill for legacy presets', () => {
   const [preset] = parsePresetExport(JSON.stringify([
     {
@@ -194,4 +202,30 @@ test('user preset import stops at the end of the overwrite range when no slots a
   assert.equal(result.imported, 2);
   assert.equal(result.presets[USER_PRESET_COUNT - 2]?.name, 'Overwrite A');
   assert.equal(result.presets[USER_PRESET_COUNT - 1]?.name, 'Overwrite B');
+});
+
+test('presets keep a valid design viewport and drop invalid ones', () => {
+  const exportFile = createCurrentPresetExport(
+    'PC tuned',
+    DEFAULT_SETTINGS,
+    null,
+    null,
+    { width: 1299.6, height: 700.4 },
+  );
+  assert.equal(exportFile.schemaVersion, 9);
+  assert.deepEqual(exportFile.presets[0].designViewport, { width: 1300, height: 700 });
+  assert.equal('designViewport' in exportFile.presets[0].settings, false);
+
+  const [kept, dropped, legacy] = parsePresetExport(JSON.stringify([
+    exportFile.presets[0],
+    { ...exportFile.presets[0], designViewport: { width: 'bad' } },
+    { name: 'v8', settings: presetFromSettings(DEFAULT_SETTINGS) },
+  ]));
+  assert.deepEqual(kept.designViewport, { width: 1300, height: 700 });
+  assert.equal('designViewport' in dropped, false);
+  assert.equal('designViewport' in legacy, false);
+
+  const { presets } = importUserPresets(Array(USER_PRESET_COUNT).fill(null), [kept, legacy], null);
+  assert.deepEqual(presets[0].designViewport, { width: 1300, height: 700 });
+  assert.equal('designViewport' in presets[1], false);
 });

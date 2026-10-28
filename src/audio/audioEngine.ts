@@ -203,6 +203,10 @@ export class AudioEngine {
     return this.maxBallVoices + this.maxParticleVoices;
   }
 
+  get contextState(): string {
+    return this.context?.state ?? 'none';
+  }
+
   getDiagnostics(): AudioDiagnostics {
     const activeGainUpperBound = this.estimateActiveGainUpperBound();
     this.maxActiveGainUpperBound = Math.max(this.maxActiveGainUpperBound, activeGainUpperBound);
@@ -350,7 +354,9 @@ export class AudioEngine {
     }
 
     const context = this.ensureContext();
-    if (context.state === 'suspended') {
+    // iOS WebKit also reports a non-standard `interrupted` state, for example
+    // after the page returns from the background.
+    if (context.state !== 'running' && context.state !== 'closed') {
       this.lastResumeStatus = 'pending';
       this.resumeAttempts += 1;
       context.resume()

@@ -36,6 +36,16 @@ import {
   type UserPreset,
 } from '../sim/presets';
 import {
+  DEFAULT_DESIGN_VIEWPORT,
+  computeViewScale,
+  loadViewScaleMode,
+  saveViewScaleMode,
+  viewScaleTitle,
+  type ViewScale,
+  type ViewScaleMode,
+  type Viewport,
+} from '../sim/viewScale';
+import {
   DEFAULT_SETTINGS,
   type AudioWaveform,
   type BallPalette,
@@ -69,8 +79,10 @@ import {
   createAudioDebugLines,
   createPhysicsDebugLines as createPhysicsDebugTextLines,
   debugProfileFromLocation,
+  debugVisibleFromParams,
   type DebugProfile,
 } from './debugPanel';
+import { shouldShowSoundUnlock } from './soundUnlock';
 import {
   MESSAGE_FORMATION_DESKTOP_FONT_RATIO,
   MESSAGE_FORMATION_LINE_HEIGHT_RATIO,
@@ -98,6 +110,14 @@ import {
   type MyPanelState,
 } from './myPanel';
 import { PresetPanel, fillPresetOptions, syncPresetSelectValue } from './presetPanel';
+import {
+  FrontPresetBar,
+  loadFrontPresetBarVisible,
+  presetBrowseOrder,
+  saveFrontPresetBarVisible,
+  stepPresetValue,
+  type PresetStep,
+} from './frontPresetBar';
 import {
   AUDIO_UI_MAX,
   DAMPING_UI_MAX,
@@ -241,16 +261,26 @@ export class DotpingApp {
   private lastDebugText = '';
   private debugEl: HTMLDivElement | null = null;
   private debugCopyButton: HTMLButtonElement | null = null;
+  private soundUnlockButton: HTMLButtonElement | null = null;
+  private lastCanvasUnlockAttemptAt = -1;
   private debugCopyFeedbackTimer = 0;
   private debugCopyFeedbackButton: HTMLButtonElement | null = null;
   private hudEl: HTMLDivElement | null = null;
   private pinnedSettingsEl: HTMLDivElement | null = null;
   private settingsButton: HTMLButtonElement | null = null;
+  private viewScaleButton: HTMLButtonElement | null = null;
+  private viewScaleMode: ViewScaleMode = 'fit';
+  private designViewport: Viewport = DEFAULT_DESIGN_VIEWPORT;
+  private view: ViewScale = computeViewScale({ width: 1, height: 1 }, DEFAULT_DESIGN_VIEWPORT, '1:1');
   private presetPanel: PresetPanel | null = null;
+  private frontPresetBar: FrontPresetBar | null = null;
+  private frontPresetBarVisible = true;
   private userPresets: Array<UserPreset | null> = [];
   private pinnableGroups: PinnableSettingsGroup[] = [];
   private activePinnedGroupId: PinnableGroupId | null = null;
   private activePresetValue = 'custom';
+  // Where front bar browsing resumes after the tuning turned Custom.
+  private lastAppliedPresetValue: string | null = null;
   private activePresetSnapshot: PresetSettings | null = null;
   private debugProfile: DebugProfile = DEFAULT_DEBUG_PROFILE;
   private activeAudioPanel: AudioPanelId = 'ball';
@@ -284,8 +314,12 @@ export class DotpingApp {
     this.debugProfile = debugProfileFromLocation(window.location.search);
     this.audio.setTuning(this.settings);
     this.userPresets = loadUserPresets();
+    this.frontPresetBarVisible = loadFrontPresetBarVisible();
+    this.viewScaleMode = loadViewScaleMode();
     this.renderer = new PixiRenderer(this.root);
     await this.renderer.init();
+    this.view = this.computeView();
+    this.renderer.setViewScale(this.view.scale);
     this.renderer.setParticlePalette(this.settings.particlePalette);
     this.renderer.setParticleRimWidth(this.settings.particleRimWidth);
     this.renderer.setParticleBrightnessResponse(this.settings.particleBrightnessResponse);
@@ -297,8 +331,8 @@ export class DotpingApp {
 
     this.physics = new DotpingPhysicsWorld(
       this.rapier,
-      this.renderer.width,
-      this.renderer.height,
+      this.view.worldWidth,
+      this.view.worldHeight,
       this.settings,
     );
     this.physics.setDiagnosticsEnabled(this.settings.debug);
@@ -341,6 +375,7 @@ export class DotpingApp {
 
       renderer.render(physics.snapshot());
       this.audio.playImpacts(impacts);
+      this.updateSoundUnlockButton(time);
       this.updateDebug(deltaSeconds, impacts.length);
     } catch (error) {
       this.pauseFrameLoop(error);
@@ -381,6 +416,16 @@ export class DotpingApp {
   }
 
   private buildUi() {
+    const viewScaleButton = document.createElement('button');
+    viewScaleButton.className = 'view-scale-button';
+    viewScaleButton.type = 'button';
+    viewScaleButton.addEventListener('click', () => {
+      this.setViewScaleMode(this.viewScaleMode === 'fit' ? '1:1' : 'fit');
+    });
+    this.viewScaleButton = viewScaleButton;
+    this.root.appendChild(viewScaleButton);
+    this.syncViewScaleButton();
+
     const settingsButton = document.createElement('button');
     settingsButton.className = 'settings-button';
     settingsButton.type = 'button';
@@ -1031,11 +1076,23 @@ export class DotpingApp {
       utilityGroup,
     );
     this.root.appendChild(panel);
-    this.setSettingsPanelOpen(true);
+    this.setSettingsPanelOpen(false);
 
     this.debugEl = document.createElement('div');
     this.debugEl.className = 'debug';
     this.root.appendChild(this.debugEl);
+
+    this.createFrontPresetBar();
+
+    this.soundUnlockButton = document.createElement('button');
+    this.soundUnlockButton.type = 'button';
+    this.soundUnlockButton.className = 'sound-unlock-button';
+    this.soundUnlockButton.textContent = 'Tap for sound';
+    this.soundUnlockButton.hidden = true;
+    this.soundUnlockButton.addEventListener('click', () => {
+      this.audio.unlock();
+    });
+    this.root.appendChild(this.soundUnlockButton);
 
     const debugCopyButton = document.createElement('button');
     debugCopyButton.className = 'debug-copy-button';
@@ -1283,9 +1340,7 @@ export class DotpingApp {
     pin.className = 'hud__button hud__pin-button';
     pin.type = 'button';
     pin.addEventListener('click', () => {
-      this.myPanelState = { ...this.myPanelState, pinned: !this.myPanelState.pinned };
-      saveMyPanelState(this.myPanelState);
-      this.applyPinnedSettingsPlacement();
+      this.togglePinnedGroup('my');
     });
     this.myPanelPinButton = pin;
 
@@ -1296,7 +1351,7 @@ export class DotpingApp {
     restoreDefault.title = 'Restore the default My Panel items';
     restoreDefault.setAttribute('aria-label', restoreDefault.title);
     restoreDefault.addEventListener('click', () => {
-      this.myPanelState = restoreDefaultMyPanelItems(this.myPanelState, this.controls.ids());
+      this.myPanelState = restoreDefaultMyPanelItems(this.controls.ids());
       saveMyPanelState(this.myPanelState);
       this.renderMyPanel();
     });
@@ -1413,8 +1468,16 @@ export class DotpingApp {
     // Touch pointerdown does not grant user activation; touch pointerup does.
     canvas.addEventListener('pointerup', (event) => {
       this.audio.unlock();
+      this.lastCanvasUnlockAttemptAt = performance.now();
       this.releasePointer(event);
     });
+
+    // A tap on any Settings control also carries activation; start audio right
+    // there instead of waiting for the next canvas touch.
+    const unlockFromPage = () => this.audio.unlock();
+    for (const type of ['pointerup', 'click', 'keydown']) {
+      document.addEventListener(type, unlockFromPage, { capture: true });
+    }
     canvas.addEventListener('pointercancel', (event) => this.releasePointer(event));
 
     // iPadOS shows its text loupe on long press even with user-select: none.
@@ -1424,8 +1487,7 @@ export class DotpingApp {
     window.addEventListener('resize', () => {
       const renderer = this.requireRenderer();
       renderer.resize();
-      this.requirePhysics().resize(renderer.width, renderer.height);
-      this.syncParticleLoadValue();
+      this.applyViewScale();
       if (!window.matchMedia('(max-width: 760px)').matches) {
         this.setSettingsPanelOpen(false);
       }
@@ -1441,8 +1503,8 @@ export class DotpingApp {
   private setPointerFromEvent(event: PointerEvent) {
     const canvas = this.requireRenderer().canvas;
     const rect = canvas.getBoundingClientRect();
-    const scaleX = this.requireRenderer().width / rect.width;
-    const scaleY = this.requireRenderer().height / rect.height;
+    const scaleX = this.requireRenderer().width / rect.width / this.view.scale;
+    const scaleY = this.requireRenderer().height / rect.height / this.view.scale;
     this.pointer.x = (event.clientX - rect.left) * scaleX;
     this.pointer.y = (event.clientY - rect.top) * scaleY;
   }
@@ -1566,9 +1628,8 @@ export class DotpingApp {
     text: string,
     particleCount: number,
   ): ParticleFormationTarget[] {
-    const renderer = this.requireRenderer();
-    const width = Math.max(Math.floor(renderer.width), 1);
-    const height = Math.max(Math.floor(renderer.height), 1);
+    const width = Math.max(Math.floor(this.view.worldWidth), 1);
+    const height = Math.max(Math.floor(this.view.worldHeight), 1);
     const mobile = window.matchMedia('(max-width: 760px)').matches;
     const settingsOpen = this.isSettingsPanelOpen();
     const margin = mobile
@@ -1706,10 +1767,9 @@ export class DotpingApp {
       return;
     }
 
-    const renderer = this.renderer;
     const load = estimateParticleLoad({
-      width: renderer?.width ?? 0,
-      height: renderer?.height ?? 0,
+      width: this.view.worldWidth,
+      height: this.view.worldHeight,
       particleCount: this.settings.particleCount,
       particleRadius: this.settings.particleRadius,
     });
@@ -1723,6 +1783,70 @@ export class DotpingApp {
       }
       valueEl.title = title;
     }
+  }
+
+  private screenViewport(): Viewport {
+    const renderer = this.requireRenderer();
+    return { width: renderer.width, height: renderer.height };
+  }
+
+  // The preset's design screen as it is recorded on Save and Export: the
+  // current world size (the browser size in `1:1`).
+  private worldViewport(): Viewport {
+    return { width: this.view.worldWidth, height: this.view.worldHeight };
+  }
+
+  private computeView() {
+    return computeViewScale(this.screenViewport(), this.designViewport, this.viewScaleMode);
+  }
+
+  // Recomputes the world size after a resize, a mode change or a new design
+  // screen. `1:1` keeps today's clamp-on-resize behaviour; `Fit` maps bodies
+  // proportionally so the scene keeps its layout.
+  private applyViewScale() {
+    const previous = this.view;
+    const next = this.computeView();
+    this.view = next;
+    this.requireRenderer().setViewScale(next.scale);
+    if (
+      this.physics
+      && (previous.worldWidth !== next.worldWidth || previous.worldHeight !== next.worldHeight)
+    ) {
+      this.physics.resize(next.worldWidth, next.worldHeight, previous.mode === 'fit' || next.mode === 'fit');
+    }
+    this.syncParticleLoadValue();
+    this.syncViewScaleButton();
+  }
+
+  private setViewScaleMode(mode: ViewScaleMode) {
+    this.viewScaleMode = mode;
+    saveViewScaleMode(mode);
+    this.applyViewScale();
+  }
+
+  private syncViewScaleButton() {
+    const button = this.viewScaleButton;
+    if (!button || !this.renderer) {
+      return;
+    }
+
+    const fit = this.view.mode === 'fit';
+    button.replaceChildren();
+    const mode = document.createElement('span');
+    mode.className = 'view-scale-button__mode';
+    mode.textContent = fit ? 'Fit' : '1:1';
+    button.appendChild(mode);
+    if (fit) {
+      const factor = document.createElement('span');
+      factor.className = 'view-scale-button__factor';
+      factor.textContent = `×${this.view.scale.toFixed(2)}`;
+      button.appendChild(factor);
+    }
+    button.classList.toggle('view-scale-button--fit', fit);
+    button.setAttribute('aria-pressed', `${fit}`);
+    const title = viewScaleTitle(this.view, this.designViewport, this.screenViewport());
+    button.title = title;
+    button.setAttribute('aria-label', title);
   }
 
   private setSettingsPanelOpen(open: boolean) {
@@ -1753,9 +1877,10 @@ export class DotpingApp {
   }
 
   private setPinnedGroup(id: PresetPinnedGroup, markPresetCustom = true) {
-    this.activePinnedGroupId = id && this.pinnableGroups.some((group) => group.id === id)
-      ? id
-      : null;
+    this.activePinnedGroupId =
+      id === 'my' || (id && this.pinnableGroups.some((group) => group.id === id))
+        ? id
+        : null;
     this.applyPinnedSettingsPlacement();
     if (markPresetCustom) {
       this.markPresetCustom();
@@ -1784,12 +1909,13 @@ export class DotpingApp {
       (group) => group.id === this.activePinnedGroupId,
     );
     const showPinnedGroup = Boolean(pinnedHost && pinnedGroup && !settingsOpen);
-    // The player's My Panel pin is independent of the preset's author pin.
+    // One pin slot: My Panel or one card, never both.
+    const myPanelPinned = this.activePinnedGroupId === 'my';
     const showMyPanel = Boolean(
       pinnedHost &&
       myPanel &&
       !settingsOpen &&
-      this.myPanelState.pinned &&
+      myPanelPinned &&
       this.myPanelState.items.length > 0,
     );
 
@@ -1808,11 +1934,10 @@ export class DotpingApp {
 
     myPanel?.classList.toggle('hud__group--pinned', showMyPanel);
     if (this.myPanelPinButton) {
-      const pinned = this.myPanelState.pinned;
-      this.myPanelPinButton.textContent = pinned ? 'Pinned' : 'Pin';
-      this.myPanelPinButton.title = pinned ? 'Unpin My Panel' : 'Pin My Panel to front';
+      this.myPanelPinButton.textContent = myPanelPinned ? 'Pinned' : 'Pin';
+      this.myPanelPinButton.title = myPanelPinned ? 'Unpin My Panel' : 'Pin My Panel to front';
       this.myPanelPinButton.setAttribute('aria-label', this.myPanelPinButton.title);
-      this.myPanelPinButton.setAttribute('aria-pressed', `${pinned}`);
+      this.myPanelPinButton.setAttribute('aria-pressed', `${myPanelPinned}`);
     }
 
     for (const group of this.pinnableGroups) {
@@ -1858,12 +1983,54 @@ export class DotpingApp {
           void this.importPresetFile(input);
         },
         getCurrentFormationLabel: () => this.currentPresetFormationLabel(),
+        onFrontMenuChange: (visible) => {
+          this.setFrontPresetBarVisible(visible);
+        },
       },
       this.userPresets,
       this.activePresetValue,
+      this.frontPresetBarVisible,
     );
     this.defineControl(this.presetSelectControl(this.presetPanel));
     return this.presetPanel.element;
+  }
+
+  private createFrontPresetBar() {
+    const bar = new FrontPresetBar({
+      onPresetChange: (value) => {
+        this.applySelectedPreset(value);
+      },
+      onStep: (step) => {
+        this.stepPreset(step);
+      },
+    });
+    bar.visible = this.frontPresetBarVisible;
+    this.frontPresetBar = bar;
+    this.root.appendChild(bar.element);
+    this.syncPresetSelectSelection();
+  }
+
+  private setFrontPresetBarVisible(visible: boolean) {
+    this.frontPresetBarVisible = visible;
+    saveFrontPresetBarVisible(visible);
+    if (this.frontPresetBar) {
+      this.frontPresetBar.visible = visible;
+    }
+    if (this.presetPanel) {
+      this.presetPanel.frontMenuVisible = visible;
+    }
+  }
+
+  private stepPreset(step: PresetStep) {
+    const value = stepPresetValue(
+      presetBrowseOrder(this.userPresets),
+      this.activePresetValue,
+      this.lastAppliedPresetValue,
+      step,
+    );
+    if (value) {
+      this.applySelectedPreset(value);
+    }
   }
 
   private presetSelectControl(presetPanel: PresetPanel): ControlDefinition {
@@ -1921,7 +2088,18 @@ export class DotpingApp {
       return;
     }
 
+    this.designViewport = this.designViewportForPresetValue(value);
+    this.applyViewScale();
     this.applyPreset(preset, value, this.initialFormationForPresetValue(value));
+  }
+
+  private designViewportForPresetValue(value: string): Viewport {
+    if (value.startsWith('user:')) {
+      const index = Number(value.slice('user:'.length));
+      return this.userPresets[index]?.designViewport ?? DEFAULT_DESIGN_VIEWPORT;
+    }
+
+    return DEFAULT_DESIGN_VIEWPORT;
   }
 
   private presetSettingsForValue(value: string): PresetSettings | null {
@@ -1959,6 +2137,7 @@ export class DotpingApp {
     }
     this.syncUiFromSettings();
     this.activePresetValue = selectedValue;
+    this.lastAppliedPresetValue = selectedValue;
     this.activePresetSnapshot = presetFromSettings(this.settings, this.activePinnedGroupId);
     this.syncPresetSelectSelection();
     this.applyInitialPresetFormation(initialFormation);
@@ -1991,7 +2170,10 @@ export class DotpingApp {
       this.presetPanel?.saveName ?? '',
       presetFromSettings(this.settings, this.activePinnedGroupId),
       this.presetPanel?.formationLabel ?? '',
+      this.worldViewport(),
     );
+    this.designViewport = this.userPresets[index]?.designViewport ?? this.designViewport;
+    this.syncViewScaleButton();
     const selectedValue = `user:${index}`;
     this.activePresetSnapshot = presetFromSettings(this.settings, this.activePinnedGroupId);
     this.renderPresetOptions(selectedValue);
@@ -2031,6 +2213,7 @@ export class DotpingApp {
       this.settings,
       this.activePinnedGroupId,
       this.currentPresetFormationLabel(),
+      this.worldViewport(),
     );
     this.downloadPresetJson(exportFile, 'dotping-current-preset.json');
     this.setPresetStatus('Exported current');
@@ -2135,10 +2318,30 @@ export class DotpingApp {
       this.activePresetValue,
     );
     this.controls.syncId('preset.select');
+    this.frontPresetBar?.sync(
+      this.activePresetValue,
+      this.userPresets,
+      this.presetPanel.optionsVersion,
+    );
   }
 
   private setPresetStatus(status: string) {
     this.presetPanel?.setStatus(status);
+  }
+
+  private updateSoundUnlockButton(now: number) {
+    if (!this.soundUnlockButton) {
+      return;
+    }
+    const visible = shouldShowSoundUnlock({
+      soundEnabled: this.settings.soundEnabled,
+      contextState: this.audio.contextState,
+      lastCanvasAttemptAt: this.lastCanvasUnlockAttemptAt,
+      now,
+    });
+    if (this.soundUnlockButton.hidden === visible) {
+      this.soundUnlockButton.hidden = !visible;
+    }
   }
 
   private updateDebug(deltaSeconds: number, impactCount: number) {
@@ -2175,6 +2378,7 @@ export class DotpingApp {
       lastStepMetrics: this.lastStepMetrics,
       impactCount,
       activeVoiceCount: this.audio.activeVoiceCount,
+      view: this.view,
     });
   }
 
@@ -2283,6 +2487,10 @@ function settingsFromUrl(defaults: DotpingSettings): DotpingSettings {
   const colliderLayout = params.get('colliderLayout') ?? params.get('cl');
   if (colliderLayout === 'single' || colliderLayout === 'split') {
     settings.colliderLayout = colliderLayout;
+  }
+
+  if (debugVisibleFromParams(params)) {
+    settings.debug = true;
   }
 
   return settings;

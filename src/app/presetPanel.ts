@@ -3,6 +3,7 @@ import {
   USER_PRESET_COUNT,
   type UserPreset,
 } from '../sim/presets';
+import { createToggle } from './controls';
 import { effectivePresetMessageText, presetDisplayLabel } from './messageFormation';
 
 type PresetPanelCallbacks = {
@@ -13,6 +14,7 @@ type PresetPanelCallbacks = {
   onExportUsers(): void;
   onImportFile(input: HTMLInputElement): void;
   getCurrentFormationLabel(): string | null;
+  onFrontMenuChange(visible: boolean): void;
 };
 
 export class PresetPanel {
@@ -29,12 +31,14 @@ export class PresetPanel {
   private readonly saveButton: HTMLButtonElement;
   private readonly deleteButton: HTMLButtonElement;
   private readonly statusEl: HTMLSpanElement;
+  private readonly frontMenuInput: HTMLInputElement;
   private userPresets: Array<UserPreset | null>;
 
   constructor(
     callbacks: PresetPanelCallbacks,
     userPresets: Array<UserPreset | null>,
     selectedValue: string,
+    frontMenuVisible: boolean,
   ) {
     this.userPresets = userPresets;
 
@@ -44,6 +48,14 @@ export class PresetPanel {
     const title = document.createElement('span');
     title.className = 'hud__preset-title';
     title.textContent = 'Preset';
+
+    const frontMenu = createToggle('Front menu', frontMenuVisible);
+    frontMenu.wrap.classList.add('hud__preset-front-menu');
+    frontMenu.wrap.title = 'Show the preset bar at the top of the stage';
+    frontMenu.input.addEventListener('change', () => {
+      callbacks.onFrontMenuChange(frontMenu.input.checked);
+    });
+    this.frontMenuInput = frontMenu.input;
 
     this.presetSelect = document.createElement('select');
     this.presetSelect.className = 'hud__select hud__preset-select';
@@ -136,6 +148,7 @@ export class PresetPanel {
 
     wrap.append(
       title,
+      frontMenu.wrap,
       this.selectRow,
       saveLabel,
       this.saveSlotSelect,
@@ -225,6 +238,10 @@ export class PresetPanel {
     }
 
     return activePresetValue;
+  }
+
+  set frontMenuVisible(visible: boolean) {
+    this.frontMenuInput.checked = visible;
   }
 
   setStatus(status: string) {

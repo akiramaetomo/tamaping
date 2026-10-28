@@ -1,6 +1,7 @@
 import type { AudioDiagnostics } from '../audio/audioEngine';
 import type { ParticleDiagnostics, StepMetrics } from '../sim/physicsWorld';
 import type { CollisionMode, GravityMode } from '../sim/settings';
+import type { ViewScale } from '../sim/viewScale';
 
 export type DebugProfile = 'physics' | 'audio';
 
@@ -16,6 +17,7 @@ export type PhysicsDebugSnapshot = {
   lastStepMetrics: StepMetrics;
   impactCount: number;
   activeVoiceCount: number;
+  view?: ViewScale;
 };
 
 export const DEFAULT_DEBUG_PROFILE: DebugProfile = 'physics';
@@ -33,6 +35,15 @@ export function debugProfileFromParams(params: URLSearchParams): DebugProfile {
     return 'audio';
   }
   return DEFAULT_DEBUG_PROFILE;
+}
+
+// Opens the debug overlay from the URL, so devices can be diagnosed without
+// touching Settings (any Settings tap grants user activation on iPad).
+export function debugVisibleFromParams(params: URLSearchParams) {
+  return params.get('debug') === '1'
+    || params.get('debugAudio') === '1'
+    || params.has('debugProfile')
+    || params.has('dbg');
 }
 
 export function debugProfileFromLocation(search: string): DebugProfile {
@@ -61,6 +72,14 @@ export function createPhysicsDebugLines(snapshot: PhysicsDebugSnapshot) {
     `colliders=${snapshot.lastStepMetrics.colliderCount}`,
     `hits=${snapshot.impactCount}`,
     `voices=${snapshot.activeVoiceCount}`,
+    ...(snapshot.view ? viewScaleDebugLines(snapshot.view) : []),
+  ];
+}
+
+function viewScaleDebugLines(view: ViewScale) {
+  return [
+    `view_scale=${view.mode} x${view.scale.toFixed(3)}`,
+    `world=${Math.round(view.worldWidth)}x${Math.round(view.worldHeight)}`,
   ];
 }
 

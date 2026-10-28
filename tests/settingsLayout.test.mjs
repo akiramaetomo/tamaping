@@ -42,42 +42,33 @@ test('All shows every card except an empty My Panel; single tabs show one card',
 test('My Panel state drops unknown ids, duplicates and items past the cap', () => {
   assert.deepEqual(
     normalizeMyPanelState(
-      { items: ['mode.flash', 'gone', 'mode.flash', 3, 'mode.name'], pinned: true },
+      { items: ['mode.flash', 'gone', 'mode.flash', 3, 'mode.name'] },
       KNOWN,
     ),
-    { items: ['mode.flash', 'mode.name'], pinned: true },
+    { items: ['mode.flash', 'mode.name'] },
   );
+  // The old player pin is dropped: pinning now uses the shared pin slot.
   assert.deepEqual(
-    normalizeMyPanelState({ items: [...KNOWN], pinned: 'yes' }, KNOWN, 2),
-    { items: ['mode.flash', 'mode.name'], pinned: false },
+    normalizeMyPanelState({ items: [...KNOWN], pinned: true }, KNOWN, 2),
+    { items: ['mode.flash', 'mode.name'] },
   );
-  assert.deepEqual(parseMyPanelState('{broken', KNOWN), { items: [], pinned: false });
-  assert.deepEqual(parseMyPanelState('', KNOWN), { items: [], pinned: false });
+  assert.deepEqual(parseMyPanelState('{broken', KNOWN), { items: [] });
+  assert.deepEqual(parseMyPanelState('', KNOWN), { items: [] });
   assert.equal(MY_PANEL_MAX_ITEMS, 10);
 });
 
 test('My Panel starts with the default items only when nothing was saved', () => {
   const known = new Set([...DEFAULT_MY_PANEL_ITEMS, 'ball.size']);
-  assert.deepEqual(parseMyPanelState(null, known), {
-    items: [...DEFAULT_MY_PANEL_ITEMS],
-    pinned: false,
-  });
+  assert.deepEqual(parseMyPanelState(null, known), { items: [...DEFAULT_MY_PANEL_ITEMS] });
   // An emptied panel was saved on purpose, so it stays empty.
-  assert.deepEqual(
-    parseMyPanelState(JSON.stringify({ items: [], pinned: false }), known),
-    { items: [], pinned: false },
-  );
-  // Default restores the items and keeps the pin choice.
-  assert.deepEqual(
-    restoreDefaultMyPanelItems({ items: ['ball.size'], pinned: true }, known),
-    { items: [...DEFAULT_MY_PANEL_ITEMS], pinned: true },
-  );
+  assert.deepEqual(parseMyPanelState(JSON.stringify({ items: [] }), known), { items: [] });
+  assert.deepEqual(restoreDefaultMyPanelItems(known), { items: [...DEFAULT_MY_PANEL_ITEMS] });
   // Unknown default ids are dropped like any other unknown id.
   assert.deepEqual(parseMyPanelState(null, KNOWN).items, ['audio.sound', 'mode.flash']);
 });
 
 test('toggling My Panel items keeps pick order and respects the cap', () => {
-  let state = { items: [], pinned: false };
+  let state = { items: [] };
   state = toggleMyPanelItem(state, 'mode.name');
   state = toggleMyPanelItem(state, 'mode.flash');
   assert.deepEqual(state.items, ['mode.name', 'mode.flash']);

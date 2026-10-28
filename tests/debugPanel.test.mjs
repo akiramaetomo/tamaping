@@ -7,6 +7,7 @@ import {
   createPhysicsDebugLines,
   debugProfileFromLocation,
   debugProfileFromParams,
+  debugVisibleFromParams,
   formatDiagnosticNumber,
   gravityLabel,
   particleModelLabel,
@@ -25,6 +26,17 @@ test('debug profile query parsing preserves accepted aliases and fallback order'
   params.set('debugProfile', 'audio');
   params.set('dbg', 'physics');
   assert.equal(debugProfileFromParams(params), 'audio');
+});
+
+test('debug overlay opens from the URL only when a debug query is present', () => {
+  const visible = (search) => debugVisibleFromParams(new URLSearchParams(search));
+  assert.equal(visible(''), false);
+  assert.equal(visible('?debug=0'), false);
+  assert.equal(visible('?debug=1'), true);
+  assert.equal(visible('?debugAudio=1'), true);
+  assert.equal(visible('?debugProfile=audio'), true);
+  assert.equal(visible('?dbg=physics'), true);
+  assert.equal(visible('?lu=10'), false);
 });
 
 test('physics debug lines keep existing labels, order, and numeric formatting', () => {

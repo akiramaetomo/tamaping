@@ -150,6 +150,59 @@ button:disabled {
   box-shadow: 0 0 0 2px rgb(94 187 255 / 18%), 0 10px 24px rgb(0 0 0 / 28%);
 }
 
+.view-scale-button {
+  position: fixed;
+  right: calc(max(12px, env(safe-area-inset-right)) + 50px);
+  top: max(12px, env(safe-area-inset-top));
+  z-index: 3;
+  display: inline-flex;
+  width: 48px;
+  min-height: 42px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0;
+  border: 1px solid rgb(206 229 255 / 32%);
+  border-radius: 8px;
+  background: rgb(14 20 32 / 88%);
+  color: #b9c7da;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 28%);
+  font: inherit;
+  line-height: 1;
+  touch-action: manipulation;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 80ms ease;
+}
+
+.view-scale-button__mode {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.view-scale-button__factor {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.view-scale-button--fit {
+  border-color: rgb(142 232 208 / 46%);
+  color: #8ee8d0;
+}
+
+.view-scale-button:hover {
+  border-color: rgb(206 229 255 / 54%);
+  background: rgb(22 34 52 / 94%);
+}
+
+.view-scale-button:active {
+  transform: translateY(1px) scale(0.97);
+}
+
+.view-scale-button:focus-visible,
 .settings-button:focus-visible,
 .hud__button:focus-visible,
 .hud__icon-button:focus-visible,
@@ -368,10 +421,14 @@ button:disabled {
 }
 
 .hud__preset-title {
-  grid-column: 1 / -1;
   color: var(--accent-preset);
   font-size: 14px;
   font-weight: 700;
+}
+
+.hud__preset-front-menu {
+  justify-self: end;
+  font-size: 12px;
 }
 
 .hud__preset-select-row {
@@ -1081,6 +1138,179 @@ button:disabled {
   white-space: pre;
 }
 
+.sound-unlock-button {
+  position: fixed;
+  left: 50%;
+  top: max(12px, env(safe-area-inset-top));
+  z-index: 3;
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid rgb(255 214 137 / 55%);
+  border-radius: 21px;
+  background: rgb(14 20 32 / 88%);
+  color: var(--accent-audio);
+  font-size: 14px;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 28%);
+  transform: translateX(-50%);
+  touch-action: manipulation;
+}
+
+.front-preset-bar:not([hidden]) ~ .sound-unlock-button {
+  top: calc(max(12px, env(safe-area-inset-top)) + 46px);
+}
+
+.sound-unlock-button::before {
+  content: "\1F507";
+}
+
+.sound-unlock-button[hidden] {
+  display: none;
+}
+
+/* Only the bar's own controls take input; the stage around it stays playable. */
+.front-preset-bar {
+  position: fixed;
+  left: 50%;
+  top: max(12px, env(safe-area-inset-top));
+  z-index: 3;
+  display: flex;
+  width: max-content;
+  align-items: center;
+  gap: 4px;
+  /* Leaves room for the scale and gear buttons on both sides so the bar
+     stays centred. */
+  max-width: calc(100vw - 2 * (max(12px, env(safe-area-inset-right)) + 104px));
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.front-preset-bar[hidden] {
+  display: none;
+}
+
+.front-preset-bar__button,
+.front-preset-bar__name {
+  pointer-events: auto;
+}
+
+.front-preset-bar__button {
+  flex: none;
+  width: 36px;
+  min-height: 38px;
+  padding: 0;
+  border: 1px solid rgb(144 238 210 / 34%);
+  border-radius: 8px;
+  background: rgb(14 20 32 / 88%);
+  color: var(--accent-preset);
+  font-size: 22px;
+  line-height: 1;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 28%);
+  touch-action: manipulation;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    transform 80ms ease;
+}
+
+.front-preset-bar__button:hover {
+  border-color: rgb(144 238 210 / 60%);
+  background: rgb(22 34 52 / 94%);
+}
+
+.front-preset-bar__button:active {
+  transform: translateY(1px) scale(0.96);
+}
+
+.front-preset-bar__name {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  max-width: 300px;
+  flex: 1 1 0;
+}
+
+.front-preset-bar__name::after {
+  content: "\25BE";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  color: var(--accent-preset);
+  font-size: 26px;
+  line-height: 1;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.front-preset-bar__select {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 36px 0 12px;
+  overflow: hidden;
+  border: 1px solid rgb(144 238 210 / 34%);
+  border-radius: 8px;
+  background: rgb(14 20 32 / 88%);
+  color: #e8fff8;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 28%);
+  color-scheme: dark;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: manipulation;
+}
+
+.front-preset-bar__select option,
+.front-preset-bar__select optgroup {
+  background-color: #0e1420;
+  color: #edf4ff;
+}
+
+/* Portrait phones: start at the left edge and stop at the scale button, so
+   the name gets the space centring would leave empty on the left. */
+@media (max-width: 520px) {
+  .front-preset-bar {
+    left: max(12px, env(safe-area-inset-left));
+    right: calc(max(12px, env(safe-area-inset-right)) + 104px);
+    width: auto;
+    max-width: none;
+    transform: none;
+  }
+
+  .front-preset-bar__name {
+    max-width: none;
+  }
+}
+
+@media (max-width: 380px) {
+  .front-preset-bar {
+    gap: 3px;
+  }
+
+  .front-preset-bar__button {
+    width: 32px;
+  }
+
+  .front-preset-bar__select {
+    padding: 0 32px 0 8px;
+    font-size: 14px;
+  }
+
+  .front-preset-bar__name::after {
+    right: 8px;
+  }
+}
+
+.front-preset-bar__button:focus-visible,
+.front-preset-bar__select:focus-visible {
+  outline: 2px solid var(--accent-preset);
+  outline-offset: 2px;
+}
+
 .debug-copy-button {
   position: fixed;
   right: max(12px, env(safe-area-inset-right));
@@ -1170,7 +1400,7 @@ button:disabled {
     right: max(10px, env(safe-area-inset-right));
     bottom: max(12px, env(safe-area-inset-bottom));
     width: auto;
-    max-height: min(42vh, 340px);
+    max-height: min(46vh, 360px);
     transform: none;
   }
 }
@@ -1184,4 +1414,28 @@ button:disabled {
   .hud__my-items [data-source="preset"] .hud__select {
     max-width: none;
   }
+}
+
+/* One pinned panel at a time: rows are compact so a full panel (10 My Panel
+   items or the Particles card) fits without scrolling. Kept last so it wins
+   over the desktop sizes above. */
+.pinned-settings .hud__group {
+  gap: 2px;
+  padding: 4px 6px;
+}
+
+.pinned-settings .hud__my-items {
+  gap: 2px;
+}
+
+.pinned-settings .hud__control,
+.pinned-settings .hud__toggle,
+.pinned-settings .hud__link-options,
+.pinned-settings .hud__select,
+.pinned-settings .hud__button {
+  min-height: 26px;
+}
+
+.pinned-settings .hud__pin-button {
+  min-height: 24px;
 }

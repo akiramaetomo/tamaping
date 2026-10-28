@@ -1,18 +1,18 @@
 export const MY_PANEL_MAX_ITEMS = 10;
 export const MY_PANEL_STORAGE_KEY = 'dotping.myPanel.v1';
 
+// Pinning My Panel uses the shared pin slot, so only the items are saved.
+// An old saved `pinned` field is ignored.
 export type MyPanelState = {
   items: string[];
-  pinned: boolean;
 };
 
-export const EMPTY_MY_PANEL: MyPanelState = { items: [], pinned: false };
+export const EMPTY_MY_PANEL: MyPanelState = { items: [] };
 
 // Starting items for a browser that has never saved My Panel.
 // Sound comes first as a stopgap: toggling it restores silent first-touch audio on iPad.
 export const DEFAULT_MY_PANEL_ITEMS: readonly string[] = [
   'audio.sound',
-  'preset.select',
   'mode.random',
   'mode.flash',
   'mode.gravityStrength',
@@ -27,7 +27,7 @@ export function normalizeMyPanelState(
   maxItems = MY_PANEL_MAX_ITEMS,
 ): MyPanelState {
   if (!raw || typeof raw !== 'object') {
-    return { ...EMPTY_MY_PANEL, items: [] };
+    return { items: [] };
   }
 
   const record = raw as Record<string, unknown>;
@@ -45,7 +45,7 @@ export function normalizeMyPanelState(
     }
   }
 
-  return { items, pinned: record.pinned === true };
+  return { items };
 }
 
 export function parseMyPanelState(
@@ -55,7 +55,7 @@ export function parseMyPanelState(
 ): MyPanelState {
   if (json === null) {
     return normalizeMyPanelState(
-      { items: DEFAULT_MY_PANEL_ITEMS, pinned: false },
+      { items: DEFAULT_MY_PANEL_ITEMS },
       knownIds,
       maxItems,
     );
@@ -72,14 +72,8 @@ export function parseMyPanelState(
   }
 }
 
-export function restoreDefaultMyPanelItems(
-  state: MyPanelState,
-  knownIds: ReadonlySet<string>,
-): MyPanelState {
-  return normalizeMyPanelState(
-    { items: DEFAULT_MY_PANEL_ITEMS, pinned: state.pinned },
-    knownIds,
-  );
+export function restoreDefaultMyPanelItems(knownIds: ReadonlySet<string>): MyPanelState {
+  return normalizeMyPanelState({ items: DEFAULT_MY_PANEL_ITEMS }, knownIds);
 }
 
 export function toggleMyPanelItem(

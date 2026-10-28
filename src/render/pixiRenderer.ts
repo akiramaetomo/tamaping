@@ -77,6 +77,11 @@ export class PixiRenderer {
     this.app.destroy(true);
   }
 
+  // View Scale: snapshots are in world units; the stage maps them to screen px.
+  setViewScale(scale: number) {
+    this.app.stage.scale.set(scale);
+  }
+
   setParticlePalette(palette: ParticlePalette) {
     if (this.particlePalette === palette) {
       return;

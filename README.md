@@ -124,13 +124,20 @@ User presets are stored in your browser's local storage:
 - They are not uploaded to a server.
 - They are not shared between devices automatically.
 
-## Desktop And Smartphone Feel Different
+## Screen Size: Fit and 1:1
 
-tamaping is visual and physical, so screen size matters.
+The button left of the gear sets how screen size is handled.
 
-A preset tuned for a large desktop screen can feel intense or heavy on a phone.
-A preset tuned for a phone can look calmer on a large monitor. This difference
-is not a mistake; it is part of exploring the same system at different scales.
+- `Fit` (default): the view and the motion are scaled to the screen the
+  preset was made on. A preset made on a phone fills a desktop screen the
+  same way and moves at the same speed relative to the screen. The button
+  shows the scale factor.
+- `1:1`: screen pixels are used as they are. A large screen gives more room,
+  so balls look smaller and calmer. This is part of exploring the same system
+  at different scales.
+
+Settings values always show the preset's own numbers in both modes. Saving a
+preset also records the size of the screen it was made on.
 
 ## Privacy
 

@@ -9,12 +9,13 @@ import {
   FACTORY_PRESET_DEFINITION_DATA,
   type FactoryPresetInitialFormation,
 } from './factoryPresetData';
+import { normalizeDesignViewport, type Viewport } from './viewScale';
 
 export type { FactoryPresetInitialFormation } from './factoryPresetData';
 
 export const FACTORY_PRESET_COUNT = 30;
 export const USER_PRESET_COUNT = 30;
-export const PRESET_EXPORT_SCHEMA_VERSION = 8;
+export const PRESET_EXPORT_SCHEMA_VERSION = 9;
 
 const USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v1';
 const EXPORT_KIND = 'dotping-presets';
@@ -58,7 +59,7 @@ const PARTICLE_MASS_MAX = 100;
 const AUDIO_FREQUENCY_MIN = 30;
 const AUDIO_FREQUENCY_MAX = 10000;
 const AUDIO_WAVEFORMS: readonly AudioWaveform[] = ['sine', 'triangle', 'sawtooth', 'square'];
-const PINNED_GROUPS = ['mode', 'ball', 'particles', 'interaction', 'audio'] as const;
+const PINNED_GROUPS = ['my', 'mode', 'ball', 'particles', 'interaction', 'audio'] as const;
 
 export type PresetPinnedGroup = (typeof PINNED_GROUPS)[number] | null;
 
@@ -120,6 +121,9 @@ export type FactoryPreset = {
 export type UserPreset = {
   name: string;
   formationLabel?: string;
+  // Screen the preset was tuned on (world size at save). Missing means the
+  // default phone design screen. Not part of the Modified comparison.
+  designViewport?: Viewport;
   settings: PresetSettings;
 };
 
@@ -232,12 +236,15 @@ export function saveUserPreset(
   name: string,
   settings: PresetSettings,
   formationLabel?: string | null,
+  designViewport?: Viewport | null,
 ) {
   const next = copyUserPresetSlots(presets);
   const label = sanitizeFormationLabel(formationLabel);
+  const design = normalizeDesignViewport(designViewport);
   next[index] = {
     name: sanitizePresetName(name, index),
     ...(label ? { formationLabel: label } : {}),
+    ...(design ? { designViewport: design } : {}),
     settings: normalizePresetSettings(settings),
   };
   writeUserPresetStorage(next);
@@ -275,9 +282,11 @@ export function importUserPresets(
     }
 
     const formationLabel = sanitizeFormationLabel(preset.formationLabel);
+    const design = normalizeDesignViewport(preset.designViewport);
     next[target] = {
       name: sanitizePresetName(preset.name, target),
       ...(formationLabel ? { formationLabel } : {}),
+      ...(design ? { designViewport: design } : {}),
       settings: normalizePresetSettings(preset.settings),
     };
     imported += 1;
@@ -305,12 +314,15 @@ export function createCurrentPresetExport(
   settings: DotpingSettings,
   pinnedGroup: PresetPinnedGroup = null,
   formationLabel?: string | null,
+  designViewport?: Viewport | null,
 ): PresetExportFile {
   const label = sanitizeFormationLabel(formationLabel);
+  const design = normalizeDesignViewport(designViewport);
   return createPresetExport('current', [
     {
       name: name.trim() || 'Current',
       ...(label ? { formationLabel: label } : {}),
+      ...(design ? { designViewport: design } : {}),
       settings: presetFromSettings(settings, pinnedGroup),
     },
   ]);
@@ -336,9 +348,11 @@ function createPresetExport(
     source,
     presets: presets.map((preset, index) => {
       const formationLabel = sanitizeFormationLabel(preset.formationLabel);
+      const design = normalizeDesignViewport(preset.designViewport);
       return {
         name: sanitizePresetName(preset.name, index),
         ...(formationLabel ? { formationLabel } : {}),
+        ...(design ? { designViewport: design } : {}),
         settings: normalizePresetSettings(preset.settings),
       };
     }),
@@ -397,9 +411,11 @@ function normalizeUserPreset(value: unknown, index = 0): UserPreset | null {
 
   const settings = normalizePresetSettings(candidate.settings);
   const formationLabel = sanitizeFormationLabel(candidate.formationLabel);
+  const design = normalizeDesignViewport(candidate.designViewport);
   return {
     name: sanitizePresetName(candidate.name, index),
     ...(formationLabel ? { formationLabel } : {}),
+    ...(design ? { designViewport: design } : {}),
     settings,
   };
 }
