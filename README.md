@@ -132,12 +132,38 @@ The button left of the gear sets how screen size is handled.
   preset was made on. A preset made on a phone fills a desktop screen the
   same way and moves at the same speed relative to the screen. The button
   shows the scale factor.
-- `1:1`: screen pixels are used as they are. A large screen gives more room,
-  so balls look smaller and calmer. This is part of exploring the same system
-  at different scales.
+- `1:1`: the previous behaviour. Screen pixels are used as they are. A large
+  screen gives more room, so balls look smaller and calmer.
 
-Settings values always show the preset's own numbers in both modes. Saving a
-preset also records the size of the screen it was made on.
+| | Fit | 1:1 |
+|---|---|---|
+| Setting values (Size and others) | unchanged | unchanged |
+| Drawn size | looks as it did on the screen the preset was made on | the same number of pixels on every device |
+| Motion | same speed relative to the screen as on that screen | speed relative to the screen differs by device |
+
+### Saving and Screen Size
+
+Saving a preset in either mode also records the size of the screen it was
+made on. `Fit` scales from this record. `1:1` ignores it.
+
+- Factory presets and older presets without a record count as made on a
+  standard phone screen (360x800).
+- Saving while in `Fit` keeps the design screen of the preset you started
+  from. Even on a PC, a preset made from a factory preset is saved as
+  phone-based.
+- Saving while in `1:1` records the current browser size as the design
+  screen. Use this for a preset meant for that screen.
+
+For presets meant for several devices, tune and save in `Fit`.
+
+While tuning in `1:1`, press `Fit` before saving to see how the preset looks
+on a phone. After saving in `1:1`, pressing `Fit` at the same browser size
+changes nothing (x1.00), because that screen is now the design screen.
+Resizing the browser then scales the scene from it.
+
+The aspect ratio is not matched. A landscape PC and a portrait phone have the
+same area but different shapes, so the layout and distances to the walls
+differ a little.
 
 ## Privacy
 
