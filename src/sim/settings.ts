@@ -30,6 +30,7 @@ export type ControlBallMode = 'persistent' | 'touch';
 export type DotCombiMode = 'off' | 'velocity';
 export type GravityMode = 'none' | 'gravity' | 'antigravity';
 export type ColliderLayout = 'split' | 'single';
+export type ParticleRenderer = 'sprite' | 'graphics';
 export type AudioWaveform = 'sine' | 'triangle' | 'sawtooth' | 'square';
 export type AudioTriggerSpreadMs = 0 | 16;
 
@@ -62,6 +63,7 @@ export type DotpingSettings = {
   wallRestitution: number;
   rapierLengthUnit: number;
   colliderLayout: ColliderLayout;
+  particleRenderer: ParticleRenderer;
   soundEnabled: boolean;
   audioBallWaveform: AudioWaveform;
   audioBallFrequencyHz: number;
@@ -103,7 +105,8 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   pointerVelocityScale: 1,
   wallRestitution: 0.3,
   rapierLengthUnit: 1,
-  colliderLayout: 'split',
+  colliderLayout: 'single',
+  particleRenderer: 'sprite',
   soundEnabled: true,
   audioBallWaveform: 'triangle',
   audioBallFrequencyHz: 4000,

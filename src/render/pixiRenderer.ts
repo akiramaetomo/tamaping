@@ -1,6 +1,13 @@
-import { Application, Graphics } from 'pixi.js';
+import { Application, Graphics, UPDATE_PRIORITY } from 'pixi.js';
 import type { WorldSnapshot } from '../sim/physicsWorld';
-import type { BallPalette, ParticleGlowMode, ParticlePalette } from '../sim/settings';
+import type {
+  BallPalette,
+  ParticleGlowMode,
+  ParticlePalette,
+  ParticleRenderer,
+} from '../sim/settings';
+import { paletteColor, speedColor, speedColorToward, vividGlowColor } from './particleColors';
+import { SpriteParticleLayer } from './spriteParticleLayer';
 
 type BallStyle = {
   glow: number;
@@ -18,13 +25,22 @@ type BallStyle = {
 };
 
 const PARTICLE_RIM_ALPHA = 0.72;
+const LEADER_COLOR = 0xf7fbff;
+const LEADER_RIM_ALPHA = 0.94;
+const LEADER_HALO_ALPHA = 0.18;
+const LEADER_HALO_SCALE = 1.75;
 
 export class PixiRenderer {
   private readonly app = new Application();
   private readonly particles = new Graphics();
   private readonly control = new Graphics();
   private readonly table = new Graphics();
+  private spriteParticles: SpriteParticleLayer | null = null;
+  private tableWidth = -1;
+  private tableHeight = -1;
   private particleBaseColors: number[] = [];
+  // Glow target per dot for the sprite path; empty when stale.
+  private particleGlowTargets: number[] = [];
   private particlePalette: ParticlePalette = 'blue';
   private particleRimWidthPercent = 20;
   private particleBrightnessResponse = 1;
@@ -33,8 +49,43 @@ export class PixiRenderer {
   private particleLeaderVisible = false;
   private ballPalette: BallPalette = 'blue';
   private ballRimEnabled = true;
+  private renderStartedAt = 0;
+  private renderTimeListener: ((ms: number) => void) | null = null;
 
-  constructor(private readonly root: HTMLElement) {}
+  // `graphics` keeps the old path (one Graphics rebuilt every frame, table
+  // redrawn every frame) unchanged, for `?pr=graphics` comparisons.
+  constructor(
+    private readonly root: HTMLElement,
+    readonly particleRenderer: ParticleRenderer = 'sprite',
+  ) {}
+
+  get rendererName() {
+    return this.app.renderer.name;
+  }
+
+  get resolution() {
+    return this.app.renderer.resolution;
+  }
+
+  // Pixi renders from its own ticker at LOW priority; these bracket that call.
+  setRenderTimeListener(listener: ((ms: number) => void) | null) {
+    const ticker = this.app.ticker;
+    ticker.remove(this.markRenderStart);
+    ticker.remove(this.markRenderEnd);
+    this.renderTimeListener = listener;
+    if (listener) {
+      ticker.add(this.markRenderStart, undefined, UPDATE_PRIORITY.LOW + 1);
+      ticker.add(this.markRenderEnd, undefined, UPDATE_PRIORITY.UTILITY);
+    }
+  }
+
+  private readonly markRenderStart = () => {
+    this.renderStartedAt = performance.now();
+  };
+
+  private readonly markRenderEnd = () => {
+    this.renderTimeListener?.(performance.now() - this.renderStartedAt);
+  };
 
   get canvas() {
     return this.app.canvas;
@@ -60,12 +111,26 @@ export class PixiRenderer {
 
     this.app.canvas.className = 'stage';
     this.root.appendChild(this.app.canvas);
-    this.app.stage.addChild(this.table, this.particles, this.control);
+    if (this.particleRenderer === 'sprite') {
+      this.spriteParticles = new SpriteParticleLayer(this.particleRimWidthPercent);
+      this.app.stage.addChild(this.table, this.spriteParticles.view, this.control);
+    } else {
+      this.app.stage.addChild(this.table, this.particles, this.control);
+    }
   }
 
   render(snapshot: WorldSnapshot) {
-    this.drawTable(snapshot.width, snapshot.height);
-    this.drawParticles(snapshot);
+    if (this.spriteParticles) {
+      if (snapshot.width !== this.tableWidth || snapshot.height !== this.tableHeight) {
+        this.tableWidth = snapshot.width;
+        this.tableHeight = snapshot.height;
+        this.drawTable(snapshot.width, snapshot.height);
+      }
+      this.drawSpriteParticles(this.spriteParticles, snapshot);
+    } else {
+      this.drawTable(snapshot.width, snapshot.height);
+      this.drawParticles(snapshot);
+    }
     this.drawControl(snapshot);
   }
 
@@ -74,6 +139,7 @@ export class PixiRenderer {
   }
 
   dispose() {
+    this.spriteParticles?.destroy();
     this.app.destroy(true);
   }
 
@@ -93,6 +159,7 @@ export class PixiRenderer {
 
   setParticleRimWidth(width: number) {
     this.particleRimWidthPercent = Math.max(5, Math.min(width, 100));
+    this.spriteParticles?.setRimWidth(this.particleRimWidthPercent);
   }
 
   setParticleBrightnessResponse(response: number) {
@@ -101,10 +168,12 @@ export class PixiRenderer {
 
   setParticleGlowMode(mode: ParticleGlowMode) {
     this.particleGlowMode = mode;
+    this.particleGlowTargets = [];
   }
 
   setParticleGlowVividness(vividness: number) {
     this.particleGlowVividness = Math.max(0, Math.min(vividness, 2));
+    this.particleGlowTargets = [];
   }
 
   setParticleLeaderVisible(visible: boolean) {
@@ -150,11 +219,11 @@ export class PixiRenderer {
       }
 
       if (this.particleLeaderVisible && index === 0) {
-        this.particles.circle(dot.x, dot.y, dot.radius * 1.75).fill({
-          color: 0xf7fbff,
-          alpha: 0.18,
+        this.particles.circle(dot.x, dot.y, dot.radius * LEADER_HALO_SCALE).fill({
+          color: LEADER_COLOR,
+          alpha: LEADER_HALO_ALPHA,
         });
-        color = 0xf7fbff;
+        color = LEADER_COLOR;
       }
 
       this.drawParticle(dot.x, dot.y, dot.radius, color, index === 0);
@@ -168,7 +237,7 @@ export class PixiRenderer {
     color: number,
     isLeader: boolean,
   ) {
-    const rimAlpha = this.particleLeaderVisible && isLeader ? 0.94 : PARTICLE_RIM_ALPHA;
+    const rimAlpha = this.particleLeaderVisible && isLeader ? LEADER_RIM_ALPHA : PARTICLE_RIM_ALPHA;
     const rimWidth = radius * (this.particleRimWidthPercent / 100);
 
     if (this.particleRimWidthPercent >= 100) {
@@ -182,6 +251,45 @@ export class PixiRenderer {
       width: rimWidth,
       alpha: rimAlpha,
     });
+  }
+
+  // Same colors and alphas as drawParticles, written into sprites.
+  private drawSpriteParticles(layer: SpriteParticleLayer, snapshot: WorldSnapshot) {
+    const particles = snapshot.particles;
+    const count = particles.length;
+    this.ensureParticleColors(count);
+    const brightness = this.particleBrightnessResponse;
+    const glowTargets = brightness > 0 ? this.ensureParticleGlowTargets(count) : null;
+    const leaderVisible = this.particleLeaderVisible && count > 0;
+    layer.setCount(count);
+
+    for (let index = 0; index < count; index += 1) {
+      const dot = particles[index];
+      const baseColor = this.particleBaseColors[index];
+      let color = glowTargets
+        ? speedColorToward(dot.speed, baseColor, brightness, glowTargets[index])
+        : baseColor;
+      let alpha = PARTICLE_RIM_ALPHA;
+      if (leaderVisible && index === 0) {
+        color = LEADER_COLOR;
+        alpha = LEADER_RIM_ALPHA;
+      }
+      layer.setParticle(index, dot.x, dot.y, dot.radius, color, alpha);
+    }
+
+    if (leaderVisible) {
+      const leader = particles[0];
+      layer.setHalo(
+        true,
+        leader.x,
+        leader.y,
+        leader.radius * LEADER_HALO_SCALE,
+        LEADER_COLOR,
+        LEADER_HALO_ALPHA,
+      );
+    } else {
+      layer.setHalo(false);
+    }
   }
 
   private drawControl(snapshot: WorldSnapshot) {
@@ -227,6 +335,15 @@ export class PixiRenderer {
     this.particleBaseColors = Array.from({ length: count }, (_, index) =>
       paletteColor(this.particlePalette, index),
     );
+  }
+
+  private ensureParticleGlowTargets(count: number) {
+    if (this.particleGlowTargets.length !== count) {
+      this.particleGlowTargets = Array.from({ length: count }, (_, index) =>
+        vividGlowColor(this.particleGlowMode, index, this.particleGlowVividness),
+      );
+    }
+    return this.particleGlowTargets;
   }
 }
 
@@ -354,202 +471,4 @@ function ballStyle(palette: BallPalette): BallStyle {
         centerAlpha: 0.78,
       };
   }
-}
-
-function paletteColor(palette: ParticlePalette, index: number) {
-  switch (palette) {
-    case 'green':
-      return javaRgb(index, 28, 70, 145, 80, 58, 70);
-    case 'yellow':
-      return javaRgb(index, 190, 55, 160, 70, 46, 50);
-    case 'red':
-      return javaRgb(index, 0x80, 127, 0, 90, 0, 90);
-    case 'pink':
-      return javaRgb(index, 210, 45, 80, 45, 120, 45);
-    case 'orange':
-      return javaRgb(index, 210, 45, 90, 65, 26, 45);
-    case 'white':
-      return javaRgb(index, 205, 45, 215, 35, 225, 30);
-    case 'pastel':
-      return javaRgb(index, 0x80, 64, 0x80, 64, 0x80, 64);
-    case 'colorful':
-      return colorfulFamilyColor(index);
-    case 'blue':
-    default:
-      return javaRgb(index, 0, 90, 0, 90, 0x80, 127);
-  }
-}
-
-function javaRgb(
-  index: number,
-  redBase: number,
-  redRange: number,
-  greenBase: number,
-  greenRange: number,
-  blueBase: number,
-  blueRange: number,
-) {
-  return rgbToHex(
-    redBase + seeded(index * 3 + 11) * redRange,
-    greenBase + seeded(index * 5 + 29) * greenRange,
-    blueBase + seeded(index * 7 + 47) * blueRange,
-  );
-}
-
-function colorfulFamilyColor(index: number) {
-  const family = Math.floor(seeded(index + 101) * 6);
-  const baseHue = [205, 325, 35, 145, 275, 55][family];
-  const hue = baseHue + (seeded(index * 3 + 17) - 0.5) * 30;
-  return hslToHex(hue, 68 + seeded(index * 5 + 31) * 18, 58 + seeded(index * 7 + 43) * 18);
-}
-
-function speedColor(
-  speed: number,
-  baseColor: number,
-  response: number,
-  glowMode: ParticleGlowMode,
-  vividness: number,
-  index: number,
-) {
-  if (response <= 0) {
-    return baseColor;
-  }
-
-  const adjustedSpeed = speed * response;
-  const t = smoothstep(clamp01(adjustedSpeed / 1900));
-  const hot = smoothstep(clamp01((adjustedSpeed - 780) / 1700));
-  const target = vividGlowColor(glowMode, index, vividness);
-  const targetMix = 0.24 + hot * 0.58;
-  const energeticColor = mixRgb(baseColor, target, targetMix);
-  const whitePeak = smoothstep(clamp01((adjustedSpeed - 2800) / 2100));
-  const peakColor = mixRgb(energeticColor, 0xffffff, whitePeak * 0.85);
-  return mixRgb(baseColor, peakColor, Math.max(t * 0.9, whitePeak * 0.94));
-}
-
-function vividGlowColor(mode: ParticleGlowMode, index: number, vividness: number) {
-  const target = glowColor(mode, index);
-  if (mode === 'white') {
-    return target;
-  }
-
-  if (vividness < 1) {
-    return mixRgb(0xf8fbff, target, vividness);
-  }
-
-  return saturateRgb(target, 1 + (vividness - 1) * 0.42);
-}
-
-function glowColor(mode: ParticleGlowMode, index: number) {
-  switch (mode) {
-    case 'white':
-      return 0xf8fbff;
-    case 'cyan':
-      return 0x00dcff;
-    case 'pink':
-      return 0xff25b8;
-    case 'red':
-      return 0xff2424;
-    case 'green':
-      return 0x38ff45;
-    case 'rainbow':
-      return hslToHex((index * 53 + 35) % 360, 96, 56);
-    case 'gold':
-    default:
-      return 0xffc400;
-  }
-}
-
-function seeded(value: number) {
-  const x = Math.sin(value * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
-}
-
-function hslToHex(h: number, s: number, l: number) {
-  const sat = s / 100;
-  const light = l / 100;
-  const chroma = (1 - Math.abs(2 * light - 1)) * sat;
-  const hp = h / 60;
-  const x = chroma * (1 - Math.abs((hp % 2) - 1));
-  const [r1, g1, b1] =
-    hp < 1
-      ? [chroma, x, 0]
-      : hp < 2
-        ? [x, chroma, 0]
-        : hp < 3
-          ? [0, chroma, x]
-          : hp < 4
-            ? [0, x, chroma]
-            : hp < 5
-              ? [x, 0, chroma]
-              : [chroma, 0, x];
-  const m = light - chroma / 2;
-  return rgbToHex((r1 + m) * 255, (g1 + m) * 255, (b1 + m) * 255);
-}
-
-function mixRgb(a: number, b: number, t: number) {
-  const ar = (a >> 16) & 0xff;
-  const ag = (a >> 8) & 0xff;
-  const ab = a & 0xff;
-  const br = (b >> 16) & 0xff;
-  const bg = (b >> 8) & 0xff;
-  const bb = b & 0xff;
-  return rgbToHex(
-    ar + (br - ar) * t,
-    ag + (bg - ag) * t,
-    ab + (bb - ab) * t,
-  );
-}
-
-function saturateRgb(color: number, factor: number) {
-  const r = ((color >> 16) & 0xff) / 255;
-  const g = ((color >> 8) & 0xff) / 255;
-  const b = (color & 0xff) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const light = (max + min) / 2;
-
-  if (max === min) {
-    return color;
-  }
-
-  const delta = max - min;
-  const saturation = light > 0.5 ? delta / (2 - max - min) : delta / (max + min);
-  let hue = 0;
-
-  if (max === r) {
-    hue = (g - b) / delta + (g < b ? 6 : 0);
-  } else if (max === g) {
-    hue = (b - r) / delta + 2;
-  } else {
-    hue = (r - g) / delta + 4;
-  }
-
-  return hslToHex((hue / 6) * 360, clamp01(saturation * factor) * 100, light * 100);
-}
-
-function lightenRgb(color: number, amount: number) {
-  const r = (color >> 16) & 0xff;
-  const g = (color >> 8) & 0xff;
-  const b = color & 0xff;
-  return rgbToHex(
-    r + (255 - r) * amount,
-    g + (255 - g) * amount,
-    b + (255 - b) * amount,
-  );
-}
-
-function rgbToHex(r: number, g: number, b: number) {
-  return ((clampByte(r) << 16) | (clampByte(g) << 8) | clampByte(b)) >>> 0;
-}
-
-function clampByte(value: number) {
-  return Math.max(0, Math.min(255, Math.round(value)));
-}
-
-function clamp01(value: number) {
-  return Math.max(0, Math.min(1, value));
-}
-
-function smoothstep(value: number) {
-  return value * value * (3 - 2 * value);
 }

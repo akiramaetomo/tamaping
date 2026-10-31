@@ -1,3 +1,4 @@
+import { contactMaterial } from './contactMaterials';
 import type { ColliderLayout, CollisionMode, DotpingSettings } from './settings';
 
 type RapierModule = any;
@@ -23,6 +24,9 @@ export type ParticleFormationTarget = {
 
 export type StepMetrics = {
   durationMs: number;
+  // JS work around `world.step`: control drive, linking, gravity / containment, impacts.
+  preStepMs: number;
+  postStepMs: number;
   lengthUnit: number;
   colliderLayout: ColliderLayout;
   colliderCount: number;
@@ -228,6 +232,7 @@ export class DotpingPhysicsWorld {
   }
 
   step(dt: number): { impacts: ImpactEvent[]; metrics: StepMetrics } {
+    const preStartedAt = performance.now();
     this.world.timestep = dt;
     this.driveControlBall(dt);
     const previousVelocities = this.captureParticleVelocities();
@@ -237,13 +242,16 @@ export class DotpingPhysicsWorld {
 
     const startedAt = performance.now();
     this.world.step(this.eventQueue);
-    const durationMs = performance.now() - startedAt;
+    const endedAt = performance.now();
     this.containControlBall();
     this.containParticles();
+    const impacts = this.collectImpacts();
     return {
-      impacts: this.collectImpacts(),
+      impacts,
       metrics: {
-        durationMs,
+        durationMs: endedAt - startedAt,
+        preStepMs: startedAt - preStartedAt,
+        postStepMs: performance.now() - endedAt,
         lengthUnit: this.settings.rapierLengthUnit,
         colliderLayout: this.settings.colliderLayout,
         colliderCount: this.colliderCount,
@@ -342,14 +350,19 @@ export class DotpingPhysicsWorld {
     const body = this.world.createRigidBody(
       this.rapier.RigidBodyDesc.fixed().setTranslation(x, y),
     );
-    const collider = this.world.createCollider(
-      this.rapier.ColliderDesc.cuboid(halfWidth, halfHeight)
-        .setRestitution(this.settings.wallRestitution)
-        .setFriction(0)
-        .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
-        .setCollisionGroups(groups(GROUP_WALL, GROUP_CONTROL | GROUP_PARTICLE)),
-      body,
-    );
+    let desc = this.rapier.ColliderDesc.cuboid(halfWidth, halfHeight)
+      .setRestitution(this.settings.wallRestitution)
+      .setFriction(0)
+      .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
+      .setCollisionGroups(groups(GROUP_WALL, GROUP_CONTROL | GROUP_PARTICLE));
+    if (this.settings.colliderLayout === 'single') {
+      const multiply = this.rapier.CoefficientCombineRule.Multiply;
+      desc = desc
+        .setRestitution(this.material().wallRestitution)
+        .setRestitutionCombineRule(multiply)
+        .setFrictionCombineRule(multiply);
+    }
+    const collider = this.world.createCollider(desc, body);
     this.colliderRoles.set(collider.handle, role);
     this.wallColliders.push(collider);
   }
@@ -373,7 +386,7 @@ export class DotpingPhysicsWorld {
       const collider = this.world.createCollider(
         this.rapier.ColliderDesc.ball(radius)
           .setDensity(this.settings.controlBallMass / Math.max(Math.PI * radius * radius, 1))
-          .setRestitution(this.settings.contactRestitution)
+          .setRestitution(this.material().contactRestitution)
           .setFriction(this.settings.controlBallFriction)
           .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
           .setCollisionGroups(groups(GROUP_CONTROL, GROUP_WALL | GROUP_PARTICLE)),
@@ -412,6 +425,7 @@ export class DotpingPhysicsWorld {
   private createParticles(preserved?: BodyState[]) {
     const positions = this.particlePositions(preserved);
     const particleFilter = this.particleCollisionFilter();
+    const { contactRestitution } = this.material();
 
     for (const position of positions) {
       const radius = this.settings.particleRadius;
@@ -426,7 +440,7 @@ export class DotpingPhysicsWorld {
         const collider = this.world.createCollider(
           this.rapier.ColliderDesc.ball(radius)
             .setDensity(this.settings.particleMass / Math.max(Math.PI * radius * radius, 1))
-            .setRestitution(this.settings.contactRestitution)
+            .setRestitution(contactRestitution)
             .setFriction(this.settings.particleFriction)
             .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
             .setCollisionGroups(groups(GROUP_PARTICLE, GROUP_WALL | particleFilter)),
@@ -924,6 +938,11 @@ export class DotpingPhysicsWorld {
     return null;
   }
 
+  // Restitution values for the `single` layout; see `contactMaterials.ts`.
+  private material() {
+    return contactMaterial(this.settings.contactRestitution, this.settings.wallRestitution);
+  }
+
   private particleCollisionFilter() {
     switch (this.settings.collisionMode) {
       case 'collision-physical':
@@ -970,7 +989,8 @@ export class DotpingPhysicsWorld {
     );
 
     if (this.settings.colliderLayout === 'single') {
-      callIfFunction(this.controlContactCollider, 'setRestitution', this.settings.contactRestitution);
+      const material = this.material();
+      callIfFunction(this.controlContactCollider, 'setRestitution', material.contactRestitution);
       callIfFunction(this.controlContactCollider, 'setFriction', this.settings.controlBallFriction);
       callIfFunction(
         this.controlContactCollider,
@@ -980,7 +1000,7 @@ export class DotpingPhysicsWorld {
       );
 
       for (const wallCollider of this.wallColliders) {
-        callIfFunction(wallCollider, 'setRestitution', this.settings.wallRestitution);
+        callIfFunction(wallCollider, 'setRestitution', material.wallRestitution);
       }
 
       for (const particle of this.particles) {
@@ -991,7 +1011,7 @@ export class DotpingPhysicsWorld {
         this.settings.particleMass /
         Math.max(Math.PI * this.settings.particleRadius * this.settings.particleRadius, 1);
       for (const collider of this.particleContactColliders) {
-        callIfFunction(collider, 'setRestitution', this.settings.contactRestitution);
+        callIfFunction(collider, 'setRestitution', material.contactRestitution);
         callIfFunction(collider, 'setFriction', this.settings.particleFriction);
         callIfFunction(collider, 'setDensity', particleDensity);
       }

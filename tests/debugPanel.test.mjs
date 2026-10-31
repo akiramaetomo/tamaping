@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_DEBUG_PROFILE,
   createAudioDebugLines,
+  createPerfDebugLines,
   createPhysicsDebugLines,
   debugProfileFromLocation,
   debugProfileFromParams,
@@ -17,6 +18,8 @@ test('debug profile query parsing preserves accepted aliases and fallback order'
   assert.equal(DEFAULT_DEBUG_PROFILE, 'physics');
   assert.equal(debugProfileFromLocation('?debugProfile=audio'), 'audio');
   assert.equal(debugProfileFromLocation('?debugProfile=physics'), 'physics');
+  assert.equal(debugProfileFromLocation('?debugProfile=perf'), 'perf');
+  assert.equal(debugProfileFromLocation('?dbg=perf'), 'perf');
   assert.equal(debugProfileFromLocation('?dbg=audio'), 'audio');
   assert.equal(debugProfileFromLocation('?debugAudio=1'), 'audio');
   assert.equal(debugProfileFromLocation('?debugProfile=other&debugAudio=1'), 'audio');
@@ -36,6 +39,7 @@ test('debug overlay opens from the URL only when a debug query is present', () =
   assert.equal(visible('?debugAudio=1'), true);
   assert.equal(visible('?debugProfile=audio'), true);
   assert.equal(visible('?dbg=physics'), true);
+  assert.equal(visible('?dbg=perf'), true);
   assert.equal(visible('?lu=10'), false);
 });
 
@@ -195,4 +199,89 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
   assert.ok(lines.includes('audio_energy_min=n/a'));
   assert.ok(lines.includes('audio_possible_clip=true'));
   assert.equal(lines.at(-1), 'silent_voice_cap_full=13');
+});
+
+const PERF_SCENE = {
+  collisionMode: 'independence-overlapping',
+  gravityMode: 'gravity',
+  particleCount: 1000,
+  particleRadius: 8,
+  particleRimWidth: 50,
+  particleBrightnessResponse: 10,
+  colliderLayout: 'split',
+  colliderCount: 2006,
+  rendererName: 'webgl',
+  particleRenderer: 'graphics',
+  devicePixelRatio: 1.5,
+  resolution: 1.5,
+  viewport: { width: 390.4, height: 844 },
+};
+
+test('perf debug lines report collecting state before the first window closes', () => {
+  const lines = createPerfDebugLines({ ...PERF_SCENE, summary: null });
+  assert.deepEqual(lines.slice(0, 4), [
+    'dotping_debug',
+    'debug_profile=perf',
+    'bench=none',
+    'perf_status=collecting',
+  ]);
+  assert.ok(lines.includes('particle_model=Independent overlap'));
+  assert.ok(lines.includes('dots=1000'));
+  assert.ok(lines.includes('rim_width=50'));
+  assert.ok(lines.includes('colliders=2006'));
+  assert.ok(lines.includes('viewport=390x844'));
+  assert.ok(lines.includes('dpr=1.5 resolution=1.5'));
+  assert.ok(lines.includes('particle_renderer=graphics'));
+});
+
+test('perf debug lines format every phase as avg, p95 and max', () => {
+  const stats = { avg: 1.234, p95: 2.5, max: 4 };
+  const lines = createPerfDebugLines({
+    ...PERF_SCENE,
+    summary: {
+      windowMs: 2016.7,
+      frames: 120,
+      fps: 59.5,
+      framesOver20Ms: 3,
+      framesOver33Ms: 1,
+      stepsAvg: 1.0333,
+      stepsMax: 3,
+      phases: {
+        interval: stats,
+        tick: stats,
+        preStep: stats,
+        worldStep: { avg: 9.5, p95: 12.25, max: 20 },
+        postStep: stats,
+        snapshot: stats,
+        build: stats,
+        pixiRender: stats,
+        audio: stats,
+      },
+    },
+  });
+  assert.ok(lines.includes('perf_window_s=2.0'));
+  assert.ok(lines.includes('perf_frames=120'));
+  assert.ok(lines.includes('fps=59.5'));
+  assert.ok(lines.includes('frames_over_33ms=1'));
+  assert.ok(lines.includes('steps_per_frame=avg 1.03 max 3'));
+  assert.ok(lines.includes('world_step_ms=avg 9.50 p95 12.25 max 20.00'));
+  assert.ok(lines.includes('pixi_render_ms=avg 1.23 p95 2.50 max 4.00'));
+  assert.ok(!lines.includes('perf_status=collecting'));
+});
+
+test('perf debug lines name the bench scene and how long it has run', () => {
+  const lines = createPerfDebugLines({
+    ...PERF_SCENE,
+    summary: null,
+    bench: { id: 'B', modified: false, elapsedSeconds: 12.34 },
+  });
+  assert.ok(lines.includes('bench=B'));
+  assert.ok(lines.includes('bench_elapsed_s=12.3'));
+
+  const modified = createPerfDebugLines({
+    ...PERF_SCENE,
+    summary: null,
+    bench: { id: 'C', modified: true, elapsedSeconds: 1 },
+  });
+  assert.ok(modified.includes('bench=C (modified)'));
 });

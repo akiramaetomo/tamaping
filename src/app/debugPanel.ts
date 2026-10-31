@@ -2,8 +2,34 @@ import type { AudioDiagnostics } from '../audio/audioEngine';
 import type { ParticleDiagnostics, StepMetrics } from '../sim/physicsWorld';
 import type { CollisionMode, GravityMode } from '../sim/settings';
 import type { ViewScale } from '../sim/viewScale';
+import { PERF_PHASES, type PerfPhase, type PerfSummary } from './frameProfiler';
 
-export type DebugProfile = 'physics' | 'audio';
+export type DebugProfile = 'physics' | 'audio' | 'perf';
+
+export type PerfBenchState = {
+  id: string;
+  modified: boolean;
+  elapsedSeconds: number;
+};
+
+export type PerfDebugSnapshot = {
+  summary: PerfSummary | null;
+  bench?: PerfBenchState | null;
+  collisionMode: CollisionMode;
+  gravityMode: GravityMode;
+  particleCount: number;
+  particleRadius: number;
+  particleRimWidth: number;
+  particleBrightnessResponse: number;
+  colliderLayout: string;
+  colliderCount: number;
+  rendererName: string;
+  particleRenderer: string;
+  devicePixelRatio: number;
+  resolution: number;
+  viewport: { width: number; height: number };
+  view?: ViewScale;
+};
 
 export type PhysicsDebugSnapshot = {
   profile: DebugProfile;
@@ -30,6 +56,9 @@ export function debugProfileFromParams(params: URLSearchParams): DebugProfile {
   }
   if (profile === 'physics') {
     return 'physics';
+  }
+  if (profile === 'perf') {
+    return 'perf';
   }
   if (params.get('debugAudio') === '1') {
     return 'audio';
@@ -72,6 +101,56 @@ export function createPhysicsDebugLines(snapshot: PhysicsDebugSnapshot) {
     `colliders=${snapshot.lastStepMetrics.colliderCount}`,
     `hits=${snapshot.impactCount}`,
     `voices=${snapshot.activeVoiceCount}`,
+    ...(snapshot.view ? viewScaleDebugLines(snapshot.view) : []),
+  ];
+}
+
+const PERF_PHASE_KEYS: Record<PerfPhase, string> = {
+  interval: 'frame_interval_ms',
+  tick: 'tick_ms',
+  preStep: 'pre_step_ms',
+  worldStep: 'world_step_ms',
+  postStep: 'post_step_ms',
+  snapshot: 'snapshot_ms',
+  build: 'build_ms',
+  pixiRender: 'pixi_render_ms',
+  audio: 'audio_ms',
+};
+
+// Phase times are per rendered frame; step phases sum every fixed step.
+export function createPerfDebugLines(snapshot: PerfDebugSnapshot) {
+  const summary = snapshot.summary;
+  return [
+    'dotping_debug',
+    'debug_profile=perf',
+    `bench=${snapshot.bench ? `${snapshot.bench.id}${snapshot.bench.modified ? ' (modified)' : ''}` : 'none'}`,
+    ...(snapshot.bench ? [`bench_elapsed_s=${snapshot.bench.elapsedSeconds.toFixed(1)}`] : []),
+    ...(summary
+      ? [
+          `perf_window_s=${(summary.windowMs / 1000).toFixed(1)}`,
+          `perf_frames=${summary.frames}`,
+          `fps=${summary.fps.toFixed(1)}`,
+          `frames_over_20ms=${summary.framesOver20Ms}`,
+          `frames_over_33ms=${summary.framesOver33Ms}`,
+          `steps_per_frame=avg ${summary.stepsAvg.toFixed(2)} max ${summary.stepsMax}`,
+          ...PERF_PHASES.map((phase) => {
+            const stats = summary.phases[phase];
+            return `${PERF_PHASE_KEYS[phase]}=avg ${stats.avg.toFixed(2)} p95 ${stats.p95.toFixed(2)} max ${stats.max.toFixed(2)}`;
+          }),
+        ]
+      : ['perf_status=collecting']),
+    `particle_model=${particleModelLabel(snapshot.collisionMode)}`,
+    `gravity=${gravityLabel(snapshot.gravityMode)}`,
+    `dots=${snapshot.particleCount}`,
+    `dot_size=${snapshot.particleRadius}`,
+    `rim_width=${snapshot.particleRimWidth}`,
+    `bright=${snapshot.particleBrightnessResponse}`,
+    `collider_layout=${snapshot.colliderLayout}`,
+    `colliders=${snapshot.colliderCount}`,
+    `renderer=${snapshot.rendererName}`,
+    `particle_renderer=${snapshot.particleRenderer}`,
+    `viewport=${Math.round(snapshot.viewport.width)}x${Math.round(snapshot.viewport.height)}`,
+    `dpr=${snapshot.devicePixelRatio} resolution=${snapshot.resolution}`,
     ...(snapshot.view ? viewScaleDebugLines(snapshot.view) : []),
   ];
 }
@@ -179,6 +258,49 @@ export function copyTextWithFallback(text: string) {
     return false;
   } finally {
     textarea.remove();
+  }
+}
+
+// Resolves true when the text reached the clipboard by either path.
+export async function copyDebugText(text: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Falls through to the textarea path.
+  }
+  return copyTextWithFallback(text);
+}
+
+// Shows `Copied` on the button that started the copy for a short moment.
+export class DebugCopyFeedback {
+  private timer = 0;
+  private button: HTMLButtonElement | null = null;
+
+  show(sourceButton: HTMLButtonElement) {
+    window.clearTimeout(this.timer);
+    if (this.button && this.button !== sourceButton) {
+      this.reset(this.button);
+    }
+
+    const originalText = sourceButton.dataset.defaultText || sourceButton.textContent || 'Copy Debug';
+    sourceButton.dataset.defaultText = originalText;
+    sourceButton.textContent = 'Copied';
+    sourceButton.classList.add('is-confirmed');
+    this.button = sourceButton;
+    this.timer = window.setTimeout(() => {
+      this.reset(sourceButton);
+    }, 1200);
+  }
+
+  private reset(button: HTMLButtonElement) {
+    button.textContent = button.dataset.defaultText || 'Copy Debug';
+    button.classList.remove('is-confirmed');
+    if (this.button === button) {
+      this.button = null;
+    }
   }
 }
 

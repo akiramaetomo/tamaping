@@ -60,7 +60,7 @@ test('current preset export preserves tunable settings and excludes runtime togg
       ...DEFAULT_SETTINGS,
       soundEnabled: false,
       debug: true,
-      colliderLayout: 'single',
+      colliderLayout: 'split',
       particleCount: 321,
       particleRadius: 64,
       particleRimWidth: 75,
@@ -228,4 +228,63 @@ test('presets keep a valid design viewport and drop invalid ones', () => {
   const { presets } = importUserPresets(Array(USER_PRESET_COUNT).fill(null), [kept, legacy], null);
   assert.deepEqual(presets[0].designViewport, { width: 1300, height: 700 });
   assert.equal('designViewport' in presets[1], false);
+});
+
+test('legacy shared audio fields fill both voices unless per-voice values exist', () => {
+  const [shared, mixed] = parsePresetExport(JSON.stringify([
+    {
+      name: 'Shared audio',
+      settings: { audioFrequencyHz: 880, audioFrequencySpread: 1.25, audioDurationMs: 120 },
+    },
+    {
+      name: 'Mixed audio',
+      settings: {
+        audioFrequencyHz: 880,
+        audioDurationMs: 120,
+        audioParticleFrequencyHz: 2200,
+        audioBallDurationMs: 40,
+      },
+    },
+  ]));
+
+  assert.equal(shared.settings.audioBallFrequencyHz, 880);
+  assert.equal(shared.settings.audioParticleFrequencyHz, 880);
+  assert.equal(shared.settings.audioBallFrequencySpread, 1.25);
+  assert.equal(shared.settings.audioParticleFrequencySpread, 1.25);
+  assert.equal(shared.settings.audioBallDurationMs, 120);
+  assert.equal(shared.settings.audioParticleDurationMs, 120);
+  assert.equal('audioFrequencyHz' in shared.settings, false);
+
+  assert.equal(mixed.settings.audioBallFrequencyHz, 880);
+  assert.equal(mixed.settings.audioParticleFrequencyHz, 2200);
+  assert.equal(mixed.settings.audioBallDurationMs, 40);
+  assert.equal(mixed.settings.audioParticleDurationMs, 120);
+});
+
+test('preset import keeps a missing pinned group distinct from an explicit unpin', () => {
+  const [missing, unpinned] = parsePresetExport(JSON.stringify([
+    { name: 'Old', settings: { particleCount: 100 } },
+    { name: 'Unpinned', settings: { particleCount: 100, pinnedGroup: null } },
+  ]));
+
+  // A missing field leaves the current pin alone when the preset is applied.
+  assert.equal('pinnedGroup' in missing.settings, false);
+  assert.equal(unpinned.settings.pinnedGroup, null);
+});
+
+test('current preset export round-trips through import unchanged', () => {
+  const tuned = {
+    ...DEFAULT_SETTINGS,
+    collisionMode: 'collision-physical',
+    particleCount: 520,
+    particleRadius: 12,
+    gravityMode: 'antigravity',
+    audioParticleWaveform: 'square',
+    audioTriggerSpreadMs: 16,
+  };
+  const exportFile = createCurrentPresetExport('Round trip', tuned, 'my', 'RT', { width: 1280, height: 720 });
+  const [imported] = parsePresetExport(JSON.stringify(exportFile));
+
+  assert.deepEqual(imported, exportFile.presets[0]);
+  assert.deepEqual(imported.settings, presetFromSettings(tuned, 'my'));
 });

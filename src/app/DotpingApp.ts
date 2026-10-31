@@ -17,14 +17,12 @@ import { PixiRenderer } from '../render/pixiRenderer';
 import {
   DotpingPhysicsWorld,
   type ImpactEvent,
-  type ParticleFormationTarget,
   type StepMetrics,
 } from '../sim/physicsWorld';
 import {
   createCurrentPresetExport,
   createUserPresetExport,
   deleteUserPreset,
-  FACTORY_PRESETS,
   importUserPresets,
   loadUserPresets,
   parsePresetExport,
@@ -65,36 +63,30 @@ import {
 import {
   attachPickButton,
   createPinButton,
-  createRange,
   createSettingsGroup,
   createSettingsTabs,
   createTextSelect,
-  createToggle,
-  type RangeControl,
 } from './controls';
 import {
   DEBUG_COPY_FALLBACK_TEXT,
   DEFAULT_DEBUG_PROFILE,
-  copyTextWithFallback,
+  DebugCopyFeedback,
+  copyDebugText,
   createAudioDebugLines,
+  createPerfDebugLines,
   createPhysicsDebugLines as createPhysicsDebugTextLines,
   debugProfileFromLocation,
-  debugVisibleFromParams,
   type DebugProfile,
 } from './debugPanel';
-import { shouldShowSoundUnlock } from './soundUnlock';
+import { FrameProfiler, measurePhase } from './frameProfiler';
 import {
-  MESSAGE_FORMATION_DESKTOP_FONT_RATIO,
-  MESSAGE_FORMATION_LINE_HEIGHT_RATIO,
-  MESSAGE_FORMATION_MIN_FONT_SIZE,
-  MESSAGE_FORMATION_MOBILE_FONT_RATIO,
-  MESSAGE_FORMATION_SAMPLE_ALPHA,
-  createDotFontMessagePoints,
-  createMessageTargetsFromPoints,
-  effectivePresetMessageText,
-  messageBlockHeightRatio,
-  messageLines,
-} from './messageFormation';
+  BENCH_PRESETS,
+  benchIdFromParams,
+  benchPresetForValue,
+  benchPresetValue,
+} from '../sim/benchPresets';
+import { shouldShowSoundUnlock } from './soundUnlock';
+import { createMessageFormationTargets } from './messageFormationCanvas';
 import {
   PARTICLE_LOAD_VALUE_CLASSES,
   estimateParticleLoad,
@@ -110,6 +102,23 @@ import {
   type MyPanelState,
 } from './myPanel';
 import { PresetPanel, fillPresetOptions, syncPresetSelectValue } from './presetPanel';
+import {
+  designViewportForPresetValue,
+  initialFormationForPresetValue,
+  presetEditOutcome,
+  presetExportName,
+  presetFormationLabel,
+  presetMessageText,
+  presetSettingsEqual,
+  presetSettingsForValue,
+} from './presetValues';
+import {
+  actionControl,
+  rangeSetting,
+  selectSetting,
+  toggleSetting,
+} from './settingControls';
+import { settingsFromUrl } from './urlSettings';
 import {
   FrontPresetBar,
   loadFrontPresetBarVisible,
@@ -182,50 +191,6 @@ type PinnableSettingsGroup = {
   pinButton: HTMLButtonElement;
 };
 
-type ControlCardId = ControlDefinition['card'];
-
-type ControlSpecBase = {
-  id: string;
-  card: ControlCardId;
-  label: string;
-  panelLabel: string;
-};
-
-type RangeSettingSpec = ControlSpecBase & {
-  min: number;
-  max: number;
-  step: number;
-  slider: () => number;
-  format: () => string;
-  onInput: (value: number) => void;
-  visual?: boolean;
-  // Returns an optional cleanup for when a My Panel copy is removed.
-  decorate?: (control: RangeControl) => (() => void) | void;
-};
-
-type SelectSettingSpec<T extends string | number> = ControlSpecBase & {
-  options: Array<[T, string]>;
-  read: () => T;
-  onChange: (value: string) => void;
-  visual?: boolean;
-  title?: string;
-};
-
-type ToggleSettingSpec = ControlSpecBase & {
-  read: () => boolean;
-  onChange: (checked: boolean) => void;
-  enabled?: () => boolean;
-  visual?: boolean;
-  // Layout class used only inside the source card, not in My Panel.
-  primaryClassName?: string;
-};
-
-type ActionControlSpec = ControlSpecBase & {
-  title: string;
-  onClick: (button: HTMLButtonElement) => void;
-  primaryClassName?: string;
-};
-
 type PickButton = {
   id: string;
   button: HTMLButtonElement;
@@ -254,17 +219,22 @@ export class DotpingApp {
   private averageStepMs = 0;
   private lastStepMetrics: StepMetrics = {
     durationMs: 0,
+    preStepMs: 0,
+    postStepMs: 0,
     lengthUnit: DEFAULT_SETTINGS.rapierLengthUnit,
     colliderLayout: DEFAULT_SETTINGS.colliderLayout,
     colliderCount: 0,
   };
+  private readonly frameProfiler = new FrameProfiler();
+  private shownPerfSummaryVersion = -1;
+  // performance.now() when the active bench scene started, or -1.
+  private benchStartedAt = -1;
   private lastDebugText = '';
   private debugEl: HTMLDivElement | null = null;
   private debugCopyButton: HTMLButtonElement | null = null;
   private soundUnlockButton: HTMLButtonElement | null = null;
   private lastCanvasUnlockAttemptAt = -1;
-  private debugCopyFeedbackTimer = 0;
-  private debugCopyFeedbackButton: HTMLButtonElement | null = null;
+  private readonly debugCopyFeedback = new DebugCopyFeedback();
   private hudEl: HTMLDivElement | null = null;
   private pinnedSettingsEl: HTMLDivElement | null = null;
   private settingsButton: HTMLButtonElement | null = null;
@@ -310,13 +280,13 @@ export class DotpingApp {
   ) {}
 
   async start() {
-    this.settings = settingsFromUrl(DEFAULT_SETTINGS);
+    this.settings = settingsFromUrl(DEFAULT_SETTINGS, window.location.search);
     this.debugProfile = debugProfileFromLocation(window.location.search);
     this.audio.setTuning(this.settings);
     this.userPresets = loadUserPresets();
     this.frontPresetBarVisible = loadFrontPresetBarVisible();
     this.viewScaleMode = loadViewScaleMode();
-    this.renderer = new PixiRenderer(this.root);
+    this.renderer = new PixiRenderer(this.root, this.settings.particleRenderer);
     await this.renderer.init();
     this.view = this.computeView();
     this.renderer.setViewScale(this.view.scale);
@@ -335,11 +305,23 @@ export class DotpingApp {
       this.view.worldHeight,
       this.settings,
     );
-    this.physics.setDiagnosticsEnabled(this.settings.debug);
+    this.physics.setDiagnosticsEnabled(this.physicsDiagnosticsWanted());
+    if (this.debugProfile === 'perf') {
+      this.renderer.setRenderTimeListener((ms) => {
+        this.activeProfiler()?.record('pixiRender', ms);
+      });
+    }
 
     this.buildUi();
     this.attachEvents();
     this.restartFrameLoop();
+
+    const benchId = this.debugProfile === 'perf'
+      ? benchIdFromParams(new URLSearchParams(window.location.search))
+      : null;
+    if (benchId) {
+      this.applySelectedPreset(benchPresetValue(benchId));
+    }
   }
 
   dispose() {
@@ -355,6 +337,9 @@ export class DotpingApp {
     try {
       const renderer = this.requireRenderer();
       const physics = this.requirePhysics();
+      const profiler = this.activeProfiler();
+      const tickStartedAt = profiler ? performance.now() : 0;
+      profiler?.record('interval', time - this.lastTime);
       const deltaSeconds = Math.min((time - this.lastTime) / 1000, 0.05);
       this.lastTime = time;
       this.accumulator += deltaSeconds;
@@ -368,14 +353,24 @@ export class DotpingApp {
         const result = physics.step(fixedStep);
         impacts = result.impacts;
         this.recordStepMetrics(result.metrics);
+        if (profiler) {
+          profiler.record('preStep', result.metrics.preStepMs);
+          profiler.record('worldStep', result.metrics.durationMs);
+          profiler.record('postStep', result.metrics.postStepMs);
+        }
         this.accumulator -= fixedStep;
         fixedSteps += 1;
       }
       this.fixedStepsLastFrame = fixedSteps;
 
-      renderer.render(physics.snapshot());
-      this.audio.playImpacts(impacts);
+      const snapshot = measurePhase(profiler, 'snapshot', () => physics.snapshot());
+      measurePhase(profiler, 'build', () => renderer.render(snapshot));
+      measurePhase(profiler, 'audio', () => this.audio.playImpacts(impacts));
       this.updateSoundUnlockButton(time);
+      if (profiler) {
+        profiler.record('tick', performance.now() - tickStartedAt);
+        profiler.endFrame(time, fixedSteps);
+      }
       this.updateDebug(deltaSeconds, impacts.length);
     } catch (error) {
       this.pauseFrameLoop(error);
@@ -391,6 +386,7 @@ export class DotpingApp {
     }
     this.accumulator = 0;
     this.lastTime = performance.now();
+    this.frameProfiler.reset();
     this.frameHandle = requestAnimationFrame(this.tick);
   }
 
@@ -479,7 +475,7 @@ export class DotpingApp {
     const flashTitle = 'Arrange particles around the ball';
     const nameTitle = 'Arrange particles into the current preset name';
 
-    const modeModel = el(this.selectSetting<CollisionMode>({
+    const modeModel = el(selectSetting<CollisionMode>({
       id: 'mode.model',
       card: 'mode',
       label: 'Particle Model',
@@ -491,7 +487,7 @@ export class DotpingApp {
       read: () => this.settings.collisionMode,
       onChange: (value) => this.updateSettings({ collisionMode: value as CollisionMode }),
     }));
-    const modeLinking = el(this.selectSetting<DotCombiMode>({
+    const modeLinking = el(selectSetting<DotCombiMode>({
       id: 'mode.linking',
       card: 'mode',
       label: 'Particle linking',
@@ -503,7 +499,7 @@ export class DotpingApp {
       read: () => this.settings.dotCombiMode,
       onChange: (value) => this.updateSettings({ dotCombiMode: value as DotCombiMode }),
     }));
-    const modeLeader = el(this.toggleSetting({
+    const modeLeader = el(toggleSetting({
       id: 'mode.leader',
       card: 'mode',
       label: 'No.1',
@@ -513,7 +509,7 @@ export class DotpingApp {
       enabled: () => this.settings.dotCombiMode === 'velocity',
       onChange: (checked) => this.updateSettings({ particleLeaderVisible: checked }, false),
     }));
-    const modeRandom = el(this.actionControl({
+    const modeRandom = el(actionControl({
       id: 'mode.random',
       card: 'mode',
       label: 'Random',
@@ -522,7 +518,7 @@ export class DotpingApp {
       primaryClassName: 'hud__link-random',
       onClick: () => this.requirePhysics().arrangeRandomParticles(),
     }));
-    const modeFlash = el(this.actionControl({
+    const modeFlash = el(actionControl({
       id: 'mode.flash',
       card: 'mode',
       label: 'Flash',
@@ -531,7 +527,7 @@ export class DotpingApp {
       primaryClassName: 'hud__link-flash',
       onClick: () => this.requirePhysics().arrangeFlashParticles(),
     }));
-    const modeName = el(this.actionControl({
+    const modeName = el(actionControl({
       id: 'mode.name',
       card: 'mode',
       label: 'Name',
@@ -547,7 +543,7 @@ export class DotpingApp {
     linkOptions.className = 'hud__link-options';
     linkOptions.append(modeLeader, modeRandom, modeFlash, modeName);
 
-    const modeGravity = el(this.selectSetting<GravityMode>({
+    const modeGravity = el(selectSetting<GravityMode>({
       id: 'mode.gravity',
       card: 'mode',
       label: 'Gravity',
@@ -560,7 +556,7 @@ export class DotpingApp {
       read: () => this.settings.gravityMode,
       onChange: (value) => this.updateSettings({ gravityMode: value as GravityMode }),
     }));
-    const modeGravityStrength = el(this.rangeSetting({
+    const modeGravityStrength = el(rangeSetting({
       id: 'mode.gravityStrength',
       card: 'mode',
       label: 'Gravity strength',
@@ -573,7 +569,7 @@ export class DotpingApp {
       onInput: (value) => this.updateSettings({ gravityStrength: gravityStrengthFromSlider(value) }),
     }));
 
-    const ballMode = el(this.selectSetting<ControlBallMode>({
+    const ballMode = el(selectSetting<ControlBallMode>({
       id: 'ball.mode',
       card: 'ball',
       label: 'Ball mode',
@@ -585,7 +581,7 @@ export class DotpingApp {
       read: () => this.settings.controlBallMode,
       onChange: (value) => this.updateSettings({ controlBallMode: value as ControlBallMode }),
     }));
-    const ballSize = el(this.rangeSetting({
+    const ballSize = el(rangeSetting({
       id: 'ball.size',
       card: 'ball',
       label: 'Size',
@@ -597,7 +593,7 @@ export class DotpingApp {
       format: () => formatControlBallSize(this.settings.controlBallRadius),
       onInput: (value) => this.updateSettings({ controlBallRadius: controlBallSizeFromSlider(value) }),
     }));
-    const ballWeight = el(this.rangeSetting({
+    const ballWeight = el(rangeSetting({
       id: 'ball.weight',
       card: 'ball',
       label: 'Weight',
@@ -609,7 +605,7 @@ export class DotpingApp {
       format: () => formatWeight(this.settings.controlBallMass),
       onInput: (value) => this.updateSettings({ controlBallMass: weightFromSlider(value) }),
     }));
-    const ballDamping = el(this.rangeSetting({
+    const ballDamping = el(rangeSetting({
       id: 'ball.damping',
       card: 'ball',
       label: 'Damping',
@@ -621,7 +617,7 @@ export class DotpingApp {
       format: () => formatDamping(this.settings.controlBallLinearDamping),
       onInput: (value) => this.updateSettings({ controlBallLinearDamping: dampingFromSlider(value) }),
     }));
-    const ballColor = el(this.selectSetting<BallPalette>({
+    const ballColor = el(selectSetting<BallPalette>({
       id: 'ball.color',
       card: 'ball',
       label: 'Color',
@@ -640,7 +636,7 @@ export class DotpingApp {
       read: () => this.settings.controlBallPalette,
       onChange: (value) => this.updateSettings({ controlBallPalette: value as BallPalette }, false),
     }));
-    const ballRim = el(this.toggleSetting({
+    const ballRim = el(toggleSetting({
       id: 'ball.rim',
       card: 'ball',
       label: 'Rim',
@@ -650,7 +646,7 @@ export class DotpingApp {
       onChange: (checked) => this.updateSettings({ controlBallRimEnabled: checked }, false),
     }));
 
-    const particleCount = el(this.selectSetting<number>({
+    const particleCount = el(selectSetting<number>({
       id: 'particles.count',
       card: 'particles',
       label: 'Count',
@@ -661,7 +657,7 @@ export class DotpingApp {
       read: () => this.settings.particleCount,
       onChange: (value) => this.updateSettings({ particleCount: Number(value) }),
     }));
-    const particleSize = el(this.rangeSetting({
+    const particleSize = el(rangeSetting({
       id: 'particles.size',
       card: 'particles',
       label: 'Size',
@@ -678,7 +674,7 @@ export class DotpingApp {
         return () => this.particleSizeValueEls.delete(control.value);
       },
     }));
-    const particleWeight = el(this.rangeSetting({
+    const particleWeight = el(rangeSetting({
       id: 'particles.weight',
       card: 'particles',
       label: 'Weight',
@@ -690,7 +686,7 @@ export class DotpingApp {
       format: () => formatWeight(this.settings.particleMass),
       onInput: (value) => this.updateSettings({ particleMass: particleWeightFromSlider(value) }),
     }));
-    const particleDamping = el(this.rangeSetting({
+    const particleDamping = el(rangeSetting({
       id: 'particles.damping',
       card: 'particles',
       label: 'Damping',
@@ -702,7 +698,7 @@ export class DotpingApp {
       format: () => formatDamping(this.settings.particleLinearDamping),
       onInput: (value) => this.updateSettings({ particleLinearDamping: dampingFromSlider(value) }),
     }));
-    const particleColor = el(this.selectSetting<ParticlePalette>({
+    const particleColor = el(selectSetting<ParticlePalette>({
       id: 'particles.color',
       card: 'particles',
       label: 'Color',
@@ -722,7 +718,7 @@ export class DotpingApp {
       read: () => this.settings.particlePalette,
       onChange: (value) => this.updateSettings({ particlePalette: value as ParticlePalette }, false),
     }));
-    const particleRimWidth = el(this.rangeSetting({
+    const particleRimWidth = el(rangeSetting({
       id: 'particles.rim',
       card: 'particles',
       label: 'Rim %',
@@ -735,7 +731,7 @@ export class DotpingApp {
       format: () => `${this.settings.particleRimWidth}%`,
       onInput: (value) => this.updateSettings({ particleRimWidth: value }, false),
     }));
-    const particleGlow = el(this.selectSetting<ParticleGlowMode>({
+    const particleGlow = el(selectSetting<ParticleGlowMode>({
       id: 'particles.glow',
       card: 'particles',
       label: 'Glow',
@@ -753,7 +749,7 @@ export class DotpingApp {
       read: () => this.settings.particleGlowMode,
       onChange: (value) => this.updateSettings({ particleGlowMode: value as ParticleGlowMode }, false),
     }));
-    const particleBrightness = el(this.rangeSetting({
+    const particleBrightness = el(rangeSetting({
       id: 'particles.bright',
       card: 'particles',
       label: 'Bright',
@@ -768,7 +764,7 @@ export class DotpingApp {
         particleBrightnessResponse: brightnessResponseFromSlider(value),
       }, false),
     }));
-    const particleVivid = el(this.rangeSetting({
+    const particleVivid = el(rangeSetting({
       id: 'particles.vivid',
       card: 'particles',
       label: 'Vivid',
@@ -782,7 +778,7 @@ export class DotpingApp {
       onInput: (value) => this.updateSettings({ particleGlowVividness: value }, false),
     }));
 
-    const wallBounce = el(this.rangeSetting({
+    const wallBounce = el(rangeSetting({
       id: 'interaction.wallBounce',
       card: 'interaction',
       label: 'Wall Bounce',
@@ -794,7 +790,7 @@ export class DotpingApp {
       format: () => this.settings.wallRestitution.toFixed(2),
       onInput: (value) => this.updateSettings({ wallRestitution: value }),
     }));
-    const contactBounce = el(this.rangeSetting({
+    const contactBounce = el(rangeSetting({
       id: 'interaction.contactBounce',
       card: 'interaction',
       label: 'Contact Bounce',
@@ -806,7 +802,7 @@ export class DotpingApp {
       format: () => this.settings.contactRestitution.toFixed(2),
       onInput: (value) => this.updateSettings({ contactRestitution: value }),
     }));
-    const friction = el(this.rangeSetting({
+    const friction = el(rangeSetting({
       id: 'interaction.friction',
       card: 'interaction',
       label: 'Friction',
@@ -865,7 +861,7 @@ export class DotpingApp {
     audioParticlePanel.append(...this.defineAudioVoiceControls('particle'));
     syncAudioPanel();
 
-    const sound = el(this.toggleSetting({
+    const sound = el(toggleSetting({
       id: 'audio.sound',
       card: 'audio',
       label: 'Sound',
@@ -877,7 +873,7 @@ export class DotpingApp {
       },
     }));
 
-    const debug = el(this.toggleSetting({
+    const debug = el(toggleSetting({
       id: 'utility.debug',
       card: 'utility',
       label: 'Debug',
@@ -885,12 +881,13 @@ export class DotpingApp {
       read: () => this.settings.debug,
       onChange: (checked) => {
         this.updateSettings({ debug: checked }, false, false);
-        this.requirePhysics().setDiagnosticsEnabled(checked);
+        this.requirePhysics().setDiagnosticsEnabled(this.physicsDiagnosticsWanted());
+        this.frameProfiler.reset();
       },
     }));
 
     // Audio research comparison controls: session-only, not saved and not in presets.
-    const triggerTest = el(this.selectSetting<TriggerTestMode>({
+    const triggerTest = el(selectSetting<TriggerTestMode>({
       id: 'utility.triggerTest',
       card: 'utility',
       label: 'Trigger Test',
@@ -903,7 +900,7 @@ export class DotpingApp {
         this.audio.setTriggerTestMode(this.triggerTestMode);
       },
     }));
-    const stealFade = el(this.selectSetting<StealFadeMs>({
+    const stealFade = el(selectSetting<StealFadeMs>({
       id: 'utility.stealFade',
       card: 'utility',
       label: 'Steal Fade',
@@ -916,7 +913,7 @@ export class DotpingApp {
         this.audio.setStealFadeMs(this.stealFadeMs);
       },
     }));
-    const attackTest = el(this.selectSetting<AttackTestMode>({
+    const attackTest = el(selectSetting<AttackTestMode>({
       id: 'utility.attack',
       card: 'utility',
       label: 'Attack',
@@ -929,7 +926,7 @@ export class DotpingApp {
         this.audio.setAttackTestMode(this.attackTestMode);
       },
     }));
-    const lookahead = el(this.selectSetting<LookaheadMs>({
+    const lookahead = el(selectSetting<LookaheadMs>({
       id: 'utility.lookahead',
       card: 'utility',
       label: 'Lookahead',
@@ -942,17 +939,17 @@ export class DotpingApp {
         this.audio.setLookaheadMs(this.lookaheadMs);
       },
     }));
-    const copyDebug = el(this.actionControl({
+    const copyDebug = el(actionControl({
       id: 'utility.copyDebug',
       card: 'utility',
       label: 'Copy Debug',
       panelLabel: 'Copy Debug',
       title: 'Copy current debug diagnostics',
       onClick: (button) => {
-        void this.copyDebugText(button);
+        void this.copyDebug(button);
       },
     }));
-    const reset = el(this.actionControl({
+    const reset = el(actionControl({
       id: 'utility.reset',
       card: 'utility',
       label: 'Reset',
@@ -1102,7 +1099,7 @@ export class DotpingApp {
     debugCopyButton.setAttribute('aria-label', 'Copy current debug diagnostics');
     debugCopyButton.hidden = true;
     debugCopyButton.addEventListener('click', () => {
-      void this.copyDebugText(debugCopyButton);
+      void this.copyDebug(debugCopyButton);
     });
     this.debugCopyButton = debugCopyButton;
     this.root.appendChild(debugCopyButton);
@@ -1112,121 +1109,6 @@ export class DotpingApp {
     const instance = this.controls.define(definition);
     this.attachPick(definition.id, definition.panelLabel, instance.element, this.cardPicks);
     return instance.element;
-  }
-
-  private rangeSetting(spec: RangeSettingSpec): ControlDefinition {
-    return {
-      id: spec.id,
-      card: spec.card,
-      kind: 'setting',
-      panelLabel: spec.panelLabel,
-      create: (label, changed) => {
-        const control = createRange(label ?? spec.label, spec.min, spec.max, spec.step, spec.slider());
-        control.value.textContent = spec.format();
-        if (spec.visual) {
-          control.wrap.classList.add('hud__control--visual');
-        }
-        control.input.addEventListener('input', () => {
-          spec.onInput(Number(control.input.value));
-          control.value.textContent = spec.format();
-          changed();
-        });
-        const dispose = spec.decorate?.(control) ?? undefined;
-        return {
-          element: control.wrap,
-          sync: () => {
-            control.input.value = `${spec.slider()}`;
-            control.value.textContent = spec.format();
-          },
-          dispose,
-        };
-      },
-    };
-  }
-
-  private selectSetting<T extends string | number>(spec: SelectSettingSpec<T>): ControlDefinition {
-    return {
-      id: spec.id,
-      card: spec.card,
-      kind: 'setting',
-      panelLabel: spec.panelLabel,
-      create: (label, changed) => {
-        const control = createTextSelect<T>(label ?? spec.label, spec.options, spec.read());
-        syncSelectValue(control.input, spec.read());
-        if (spec.visual) {
-          control.wrap.classList.add('hud__control--visual');
-        }
-        if (spec.title) {
-          control.input.title = spec.title;
-        }
-        control.input.addEventListener('change', () => {
-          spec.onChange(control.input.value);
-          changed();
-        });
-        return {
-          element: control.wrap,
-          sync: () => syncSelectValue(control.input, spec.read()),
-        };
-      },
-    };
-  }
-
-  private toggleSetting(spec: ToggleSettingSpec): ControlDefinition {
-    return {
-      id: spec.id,
-      card: spec.card,
-      kind: 'setting',
-      panelLabel: spec.panelLabel,
-      create: (label, changed) => {
-        const control = createToggle(label ?? spec.label, spec.read());
-        if (spec.visual) {
-          control.wrap.classList.add('hud__toggle--visual');
-        }
-        if (label === null && spec.primaryClassName) {
-          control.wrap.classList.add(spec.primaryClassName);
-        }
-        const sync = () => {
-          control.input.checked = spec.read();
-          if (spec.enabled) {
-            const enabled = spec.enabled();
-            control.input.disabled = !enabled;
-            control.wrap.classList.toggle('is-disabled', !enabled);
-          }
-        };
-        control.input.addEventListener('change', () => {
-          spec.onChange(control.input.checked);
-          changed();
-        });
-        sync();
-        return { element: control.wrap, sync };
-      },
-    };
-  }
-
-  private actionControl(spec: ActionControlSpec): ControlDefinition {
-    return {
-      id: spec.id,
-      card: spec.card,
-      kind: 'action',
-      panelLabel: spec.panelLabel,
-      create: (label) => {
-        // The wrapper hosts the pick marker, which cannot be nested inside a button.
-        const wrap = document.createElement('span');
-        wrap.className = 'hud__action';
-        if (label === null && spec.primaryClassName) {
-          wrap.classList.add(spec.primaryClassName);
-        }
-        const button = document.createElement('button');
-        button.className = 'hud__button';
-        button.type = 'button';
-        button.textContent = label ?? spec.label;
-        button.title = spec.title;
-        button.setAttribute('aria-label', spec.title);
-        button.addEventListener('click', () => spec.onClick(button));
-        wrap.append(button);
-        return { element: wrap, sync: () => {} };
-      },
-    };
   }
 
   private defineAudioVoiceControls(voice: AudioPanelId) {
@@ -1247,7 +1129,7 @@ export class DotpingApp {
         } as const;
 
     return [
-      this.defineControl(this.selectSetting<AudioWaveform>({
+      this.defineControl(selectSetting<AudioWaveform>({
         id: `audio.${voice}.wave`,
         card: 'audio',
         label: 'Wave',
@@ -1264,7 +1146,7 @@ export class DotpingApp {
           false,
         ),
       })),
-      this.defineControl(this.rangeSetting({
+      this.defineControl(rangeSetting({
         id: `audio.${voice}.pitch`,
         card: 'audio',
         label: 'Pitch',
@@ -1278,7 +1160,7 @@ export class DotpingApp {
           [keys.frequency]: audioFrequencyFromSlider(value),
         } as Partial<DotpingSettings>, false),
       })),
-      this.defineControl(this.rangeSetting({
+      this.defineControl(rangeSetting({
         id: `audio.${voice}.spread`,
         card: 'audio',
         label: 'Spread',
@@ -1292,7 +1174,7 @@ export class DotpingApp {
           [keys.spread]: audioSpreadFromSlider(value),
         } as Partial<DotpingSettings>, false),
       })),
-      this.defineControl(this.rangeSetting({
+      this.defineControl(rangeSetting({
         id: `audio.${voice}.length`,
         card: 'audio',
         label: 'Sound Len.',
@@ -1559,8 +1441,15 @@ export class DotpingApp {
       return false;
     }
 
-    const text = this.currentPresetMessageText();
-    const targets = this.createMessageFormationTargets(text, physics.particleCount);
+    const targets = createMessageFormationTargets({
+      text: presetMessageText(this.activePresetValue, this.userPresets),
+      particleCount: physics.particleCount,
+      particleRadius: this.settings.particleRadius,
+      worldWidth: this.view.worldWidth,
+      worldHeight: this.view.worldHeight,
+      mobile: window.matchMedia('(max-width: 760px)').matches,
+      settingsOpen: this.isSettingsPanelOpen(),
+    });
     if (targets.length <= 0 || !physics.arrangeParticlesToTargets(targets)) {
       if (reportStatus) {
         this.setPresetStatus('Name unavailable');
@@ -1572,194 +1461,6 @@ export class DotpingApp {
       this.setPresetStatus('Name formed');
     }
     return true;
-  }
-
-  private currentPresetMessageText() {
-    const value = this.activePresetValue;
-    if (value.startsWith('factory:')) {
-      const id = value.slice('factory:'.length);
-      const preset = FACTORY_PRESETS.find((candidate) => candidate.id === id);
-      return effectivePresetMessageText(preset?.name, preset?.formationLabel);
-    }
-
-    if (value.startsWith('user:')) {
-      const index = Number(value.slice('user:'.length));
-      const preset = this.userPresets[index];
-      return effectivePresetMessageText(preset?.name, preset?.formationLabel);
-    }
-
-    return 'Custom';
-  }
-
-  private currentPresetFormationLabel() {
-    const value = this.activePresetValue;
-    if (value.startsWith('factory:')) {
-      const id = value.slice('factory:'.length);
-      const preset = FACTORY_PRESETS.find((candidate) => candidate.id === id);
-      return effectivePresetMessageText(preset?.name, preset?.formationLabel);
-    }
-
-    if (value.startsWith('user:')) {
-      const index = Number(value.slice('user:'.length));
-      const preset = this.userPresets[index];
-      return effectivePresetMessageText(preset?.name, preset?.formationLabel);
-    }
-
-    return null;
-  }
-
-  private currentPresetExportName() {
-    const value = this.activePresetValue;
-    if (value.startsWith('factory:')) {
-      const id = value.slice('factory:'.length);
-      const preset = FACTORY_PRESETS.find((candidate) => candidate.id === id);
-      return preset?.name ?? 'Current';
-    }
-
-    if (value.startsWith('user:')) {
-      const index = Number(value.slice('user:'.length));
-      return this.userPresets[index]?.name ?? 'Current';
-    }
-
-    return 'Current';
-  }
-
-  private createMessageFormationTargets(
-    text: string,
-    particleCount: number,
-  ): ParticleFormationTarget[] {
-    const width = Math.max(Math.floor(this.view.worldWidth), 1);
-    const height = Math.max(Math.floor(this.view.worldHeight), 1);
-    const mobile = window.matchMedia('(max-width: 760px)').matches;
-    const settingsOpen = this.isSettingsPanelOpen();
-    const margin = mobile
-      ? Math.max(6, width * 0.025)
-      : Math.max(18, Math.min(width, height) * 0.06);
-    const textBoxWidth = Math.max(width - margin * 2, 1);
-    const textBoxHeight = Math.max(height * (mobile ? (settingsOpen ? 0.32 : 0.44) : 0.42), 1);
-    const centerX = width * 0.5;
-    const centerY = height * (mobile ? (settingsOpen ? 0.24 : 0.36) : 0.5);
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    if (!context) {
-      return [];
-    }
-
-    const message = text.trim() || 'Custom';
-    const lines = messageLines(message, mobile);
-    const dotFontPoints = createDotFontMessagePoints(
-      lines,
-      textBoxWidth,
-      textBoxHeight,
-      centerX,
-      centerY,
-    );
-    if (dotFontPoints.length > 0) {
-      return createMessageTargetsFromPoints(
-        dotFontPoints,
-        particleCount,
-        width,
-        height,
-        this.settings.particleRadius,
-      );
-    }
-
-    const fontSize = this.messageFontSize(
-      context,
-      lines,
-      textBoxWidth,
-      textBoxHeight,
-      mobile,
-    );
-    context.clearRect(0, 0, width, height);
-    context.fillStyle = '#ffffff';
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    context.font = `800 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
-    this.drawMessageLines(context, lines, centerX, centerY, textBoxWidth, fontSize);
-
-    const image = context.getImageData(0, 0, width, height);
-    const points = this.sampleMessagePixels(image, fontSize);
-    if (points.length <= 0) {
-      return [];
-    }
-
-    return createMessageTargetsFromPoints(
-      points,
-      particleCount,
-      width,
-      height,
-      this.settings.particleRadius,
-    );
-  }
-
-  private messageFontSize(
-    context: CanvasRenderingContext2D,
-    lines: string[],
-    maxWidth: number,
-    maxHeight: number,
-    mobile: boolean,
-  ) {
-    const fontRatio = mobile
-      ? MESSAGE_FORMATION_MOBILE_FONT_RATIO
-      : MESSAGE_FORMATION_DESKTOP_FONT_RATIO;
-    let fontSize = Math.min(
-      Math.max(
-        MESSAGE_FORMATION_MIN_FONT_SIZE,
-        maxHeight / messageBlockHeightRatio(lines.length),
-      ),
-      Math.max(MESSAGE_FORMATION_MIN_FONT_SIZE, maxWidth * fontRatio),
-    );
-
-    while (fontSize > MESSAGE_FORMATION_MIN_FONT_SIZE) {
-      context.font = `800 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
-      const maxLineWidth = Math.max(...lines.map((line) => context.measureText(line).width));
-      if (
-        maxLineWidth <= maxWidth &&
-        fontSize * messageBlockHeightRatio(lines.length) <= maxHeight
-      ) {
-        break;
-      }
-      fontSize *= 0.92;
-    }
-
-    return Math.max(MESSAGE_FORMATION_MIN_FONT_SIZE, Math.floor(fontSize));
-  }
-
-  private drawMessageLines(
-    context: CanvasRenderingContext2D,
-    lines: string[],
-    centerX: number,
-    centerY: number,
-    maxWidth: number,
-    fontSize: number,
-  ) {
-    const lineGap = fontSize * MESSAGE_FORMATION_LINE_HEIGHT_RATIO;
-    const firstY = centerY - ((lines.length - 1) * lineGap) / 2;
-    for (let index = 0; index < lines.length; index += 1) {
-      context.fillText(lines[index], centerX, firstY + index * lineGap, maxWidth);
-    }
-  }
-
-  private sampleMessagePixels(image: ImageData, fontSize: number) {
-    const points: Array<{ x: number; y: number }> = [];
-    const step = Math.max(
-      4,
-      Math.floor(Math.max(this.settings.particleRadius * 2.25, fontSize / 13)),
-    );
-
-    for (let y = 0; y < image.height; y += step) {
-      for (let x = 0; x < image.width; x += step) {
-        const alpha = image.data[(y * image.width + x) * 4 + 3] ?? 0;
-        if (alpha >= MESSAGE_FORMATION_SAMPLE_ALPHA) {
-          points.push({ x, y });
-        }
-      }
-    }
-
-    return points;
   }
 
   private syncParticleLoadValue() {
@@ -1982,7 +1683,7 @@ export class DotpingApp {
         onImportFile: (input) => {
           void this.importPresetFile(input);
         },
-        getCurrentFormationLabel: () => this.currentPresetFormationLabel(),
+        getCurrentFormationLabel: () => presetFormationLabel(this.activePresetValue, this.userPresets),
         onFrontMenuChange: (visible) => {
           this.setFrontPresetBarVisible(visible);
         },
@@ -1990,6 +1691,7 @@ export class DotpingApp {
       this.userPresets,
       this.activePresetValue,
       this.frontPresetBarVisible,
+      this.shownBenchPresets(),
     );
     this.defineControl(this.presetSelectControl(this.presetPanel));
     return this.presetPanel.element;
@@ -2049,7 +1751,7 @@ export class DotpingApp {
         let optionsVersion = -1;
         const sync = () => {
           if (optionsVersion !== presetPanel.optionsVersion) {
-            fillPresetOptions(control.input, this.userPresets);
+            fillPresetOptions(control.input, this.userPresets, this.shownBenchPresets());
             optionsVersion = presetPanel.optionsVersion;
           }
           syncPresetSelectValue(control.input, this.activePresetValue);
@@ -2082,47 +1784,21 @@ export class DotpingApp {
       return;
     }
 
-    const preset = this.presetSettingsForValue(value);
+    const preset = presetSettingsForValue(value, this.userPresets);
     if (!preset) {
       this.markPresetCustom('Empty slot');
       return;
     }
 
-    this.designViewport = this.designViewportForPresetValue(value);
+    this.designViewport = designViewportForPresetValue(value, this.userPresets);
     this.applyViewScale();
-    this.applyPreset(preset, value, this.initialFormationForPresetValue(value));
-  }
-
-  private designViewportForPresetValue(value: string): Viewport {
-    if (value.startsWith('user:')) {
-      const index = Number(value.slice('user:'.length));
-      return this.userPresets[index]?.designViewport ?? DEFAULT_DESIGN_VIEWPORT;
+    this.applyPreset(preset, value, initialFormationForPresetValue(value));
+    if (benchPresetForValue(value)) {
+      // A fresh scene, so every run starts from the same kind of layout.
+      this.resetScene();
+      this.benchStartedAt = performance.now();
+      this.setPresetStatus('Bench started');
     }
-
-    return DEFAULT_DESIGN_VIEWPORT;
-  }
-
-  private presetSettingsForValue(value: string): PresetSettings | null {
-    if (value.startsWith('factory:')) {
-      const id = value.slice('factory:'.length);
-      return FACTORY_PRESETS.find((preset) => preset.id === id)?.settings ?? null;
-    }
-
-    if (value.startsWith('user:')) {
-      const index = Number(value.slice('user:'.length));
-      return this.userPresets[index]?.settings ?? null;
-    }
-
-    return null;
-  }
-
-  private initialFormationForPresetValue(value: string): FactoryPresetInitialFormation | null {
-    if (!value.startsWith('factory:')) {
-      return null;
-    }
-
-    const id = value.slice('factory:'.length);
-    return FACTORY_PRESETS.find((preset) => preset.id === id)?.initialFormation ?? null;
   }
 
   private applyPreset(
@@ -2203,16 +1879,16 @@ export class DotpingApp {
     this.presetPanel?.renderSaveDestinationOptions(
       selectedValue,
       this.userPresets,
-      this.currentPresetFormationLabel(),
+      presetFormationLabel(this.activePresetValue, this.userPresets),
     );
   }
 
   private exportCurrentPreset() {
     const exportFile = createCurrentPresetExport(
-      this.currentPresetExportName(),
+      presetExportName(this.activePresetValue, this.userPresets),
       this.settings,
       this.activePinnedGroupId,
-      this.currentPresetFormationLabel(),
+      presetFormationLabel(this.activePresetValue, this.userPresets),
       this.worldViewport(),
     );
     this.downloadPresetJson(exportFile, 'dotping-current-preset.json');
@@ -2287,19 +1963,14 @@ export class DotpingApp {
   }
 
   private markPresetCustom(status = 'Custom') {
-    const currentPreset = presetFromSettings(this.settings, this.activePinnedGroupId);
-    if (
-      this.activePresetSnapshot &&
-      presetSettingsEqual(currentPreset, this.activePresetSnapshot)
-    ) {
+    const outcome = presetEditOutcome(
+      presetFromSettings(this.settings, this.activePinnedGroupId),
+      this.activePresetSnapshot,
+      this.activePresetValue,
+    );
+    if (outcome !== 'custom') {
       this.syncPresetSelectSelection();
-      this.setPresetStatus('Applied');
-      return;
-    }
-
-    if (this.activePresetSnapshot && this.activePresetValue !== 'custom') {
-      this.syncPresetSelectSelection();
-      this.setPresetStatus('Modified');
+      this.setPresetStatus(outcome === 'applied' ? 'Applied' : 'Modified');
       return;
     }
 
@@ -2357,11 +2028,68 @@ export class DotpingApp {
       return;
     }
 
+    if (this.debugProfile === 'perf') {
+      // Rewrites only when a window closes, so overlay updates stay out of the numbers.
+      if (this.shownPerfSummaryVersion === this.frameProfiler.summaryVersion && this.lastDebugText) {
+        return;
+      }
+      this.shownPerfSummaryVersion = this.frameProfiler.summaryVersion;
+      this.lastDebugText = this.createPerfDebugLines().join('\n');
+      this.debugEl.textContent = this.lastDebugText;
+      return;
+    }
+
     const debugLines = this.debugProfile === 'audio'
       ? createAudioDebugLines(this.audio.getDiagnostics(), this.debugProfile, deltaSeconds)
       : this.createPhysicsDebugLines(deltaSeconds, impactCount);
     this.lastDebugText = debugLines.join('\n');
     this.debugEl.textContent = this.lastDebugText;
+  }
+
+  private activeProfiler() {
+    return this.settings.debug && this.debugProfile === 'perf' ? this.frameProfiler : null;
+  }
+
+  // Particle diagnostics add a full pass per step, so perf runs keep them off.
+  private physicsDiagnosticsWanted() {
+    return this.settings.debug && this.debugProfile !== 'perf';
+  }
+
+  private shownBenchPresets() {
+    return this.debugProfile === 'perf' ? BENCH_PRESETS : [];
+  }
+
+  private createPerfDebugLines() {
+    const physics = this.requirePhysics();
+    const renderer = this.requireRenderer();
+    const bench = benchPresetForValue(this.activePresetValue);
+    return createPerfDebugLines({
+      summary: this.frameProfiler.summary,
+      bench: bench
+        ? {
+            id: bench.id,
+            modified: !presetSettingsEqual(
+              presetFromSettings(this.settings, this.activePinnedGroupId),
+              bench.settings,
+            ),
+            elapsedSeconds: (performance.now() - this.benchStartedAt) / 1000,
+          }
+        : null,
+      collisionMode: this.settings.collisionMode,
+      gravityMode: this.settings.gravityMode,
+      particleCount: physics.particleCount,
+      particleRadius: this.settings.particleRadius,
+      particleRimWidth: this.settings.particleRimWidth,
+      particleBrightnessResponse: this.settings.particleBrightnessResponse,
+      colliderLayout: physics.colliderLayout,
+      colliderCount: physics.colliderCount,
+      rendererName: renderer.rendererName,
+      particleRenderer: renderer.particleRenderer,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      resolution: renderer.resolution,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      view: this.view,
+    });
   }
 
   private createPhysicsDebugLines(deltaSeconds: number, impactCount: number) {
@@ -2382,52 +2110,12 @@ export class DotpingApp {
     });
   }
 
-  private async copyDebugText(sourceButton?: HTMLButtonElement) {
-    const text = this.lastDebugText || DEBUG_COPY_FALLBACK_TEXT;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else if (!copyTextWithFallback(text)) {
-        throw new Error('Clipboard API unavailable');
-      }
+  private async copyDebug(sourceButton: HTMLButtonElement) {
+    if (await copyDebugText(this.lastDebugText || DEBUG_COPY_FALLBACK_TEXT)) {
       this.setPresetStatus('Copied debug');
-      this.showDebugCopyFeedback(sourceButton);
-    } catch {
-      if (copyTextWithFallback(text)) {
-        this.setPresetStatus('Copied debug');
-        this.showDebugCopyFeedback(sourceButton);
-        return;
-      }
-
+      this.debugCopyFeedback.show(sourceButton);
+    } else {
       this.setPresetStatus('Copy failed');
-    }
-  }
-
-  private showDebugCopyFeedback(sourceButton?: HTMLButtonElement) {
-    if (!sourceButton) {
-      return;
-    }
-
-    window.clearTimeout(this.debugCopyFeedbackTimer);
-    if (this.debugCopyFeedbackButton && this.debugCopyFeedbackButton !== sourceButton) {
-      this.resetDebugCopyFeedback(this.debugCopyFeedbackButton);
-    }
-
-    const originalText = sourceButton.dataset.defaultText || sourceButton.textContent || 'Copy Debug';
-    sourceButton.dataset.defaultText = originalText;
-    sourceButton.textContent = 'Copied';
-    sourceButton.classList.add('is-confirmed');
-    this.debugCopyFeedbackButton = sourceButton;
-    this.debugCopyFeedbackTimer = window.setTimeout(() => {
-      this.resetDebugCopyFeedback(sourceButton);
-    }, 1200);
-  }
-
-  private resetDebugCopyFeedback(button: HTMLButtonElement) {
-    button.textContent = button.dataset.defaultText || 'Copy Debug';
-    button.classList.remove('is-confirmed');
-    if (this.debugCopyFeedbackButton === button) {
-      this.debugCopyFeedbackButton = null;
     }
   }
 
@@ -2452,46 +2140,4 @@ export class DotpingApp {
     }
     return this.physics;
   }
-}
-
-function presetSettingsEqual(a: PresetSettings, b: PresetSettings) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function syncSelectValue(select: HTMLSelectElement, value: string | number) {
-  const nextValue = `${value}`;
-  for (const option of Array.from(select.options)) {
-    if (option.dataset.generated === 'true' && option.value !== nextValue) {
-      option.remove();
-    }
-  }
-  if (!Array.from(select.options).some((option) => option.value === nextValue)) {
-    const option = document.createElement('option');
-    option.value = nextValue;
-    option.textContent = nextValue;
-    option.dataset.generated = 'true';
-    select.appendChild(option);
-  }
-  select.value = nextValue;
-}
-
-function settingsFromUrl(defaults: DotpingSettings): DotpingSettings {
-  const params = new URLSearchParams(window.location.search);
-  const settings = { ...defaults };
-  const lengthUnit = Number(params.get('rapierLengthUnit') ?? params.get('lu'));
-
-  if (Number.isFinite(lengthUnit) && lengthUnit > 0) {
-    settings.rapierLengthUnit = Math.min(lengthUnit, 1000);
-  }
-
-  const colliderLayout = params.get('colliderLayout') ?? params.get('cl');
-  if (colliderLayout === 'single' || colliderLayout === 'split') {
-    settings.colliderLayout = colliderLayout;
-  }
-
-  if (debugVisibleFromParams(params)) {
-    settings.debug = true;
-  }
-
-  return settings;
 }

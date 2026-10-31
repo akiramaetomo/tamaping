@@ -3,6 +3,7 @@ import {
   USER_PRESET_COUNT,
   type UserPreset,
 } from '../sim/presets';
+import { benchPresetValue, type BenchPreset } from '../sim/benchPresets';
 import { createToggle } from './controls';
 import { effectivePresetMessageText, presetDisplayLabel } from './messageFormation';
 
@@ -39,6 +40,8 @@ export class PresetPanel {
     userPresets: Array<UserPreset | null>,
     selectedValue: string,
     frontMenuVisible: boolean,
+    // Perf-only bench scenes; empty outside `?dbg=perf`.
+    private readonly benchPresets: readonly BenchPreset[] = [],
   ) {
     this.userPresets = userPresets;
 
@@ -182,7 +185,7 @@ export class PresetPanel {
 
   renderPresetOptions(selectedValue: string, userPresets: Array<UserPreset | null>) {
     this.userPresets = userPresets;
-    fillPresetOptions(this.presetSelect, userPresets);
+    fillPresetOptions(this.presetSelect, userPresets, this.benchPresets);
     this.optionsVersion += 1;
     this.syncPresetSelectSelection(selectedValue);
   }
@@ -256,6 +259,7 @@ export class PresetPanel {
 export function fillPresetOptions(
   select: HTMLSelectElement,
   userPresets: Array<UserPreset | null>,
+  benchPresets: readonly BenchPreset[] = [],
 ) {
   select.replaceChildren();
 
@@ -286,6 +290,20 @@ export function fillPresetOptions(
     userGroup.appendChild(option);
   }
   select.appendChild(userGroup);
+
+  if (benchPresets.length === 0) {
+    return;
+  }
+
+  const benchGroup = document.createElement('optgroup');
+  benchGroup.label = 'Perf Bench';
+  for (const preset of benchPresets) {
+    const option = document.createElement('option');
+    option.value = benchPresetValue(preset.id);
+    option.textContent = preset.name;
+    benchGroup.appendChild(option);
+  }
+  select.appendChild(benchGroup);
 }
 
 // Mirrors PresetPanel.syncPresetSelectSelection for selects outside the Preset card.
