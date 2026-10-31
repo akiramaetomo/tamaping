@@ -1,4 +1,17 @@
-import { Application, Graphics, UPDATE_PRIORITY } from 'pixi.js';
+import { Application, Graphics, Sprite, UPDATE_PRIORITY } from 'pixi.js';
+import { RAY_TEXTURE_RADIUS, rayTexture } from './fxTextures';
+import {
+  BALL_CURVE,
+  BALL_TRAIL_MAX_RADII,
+  BALL_TRAIL_SECONDS,
+  NO_MOTION_FX,
+  SpeedHold,
+  TrailHistory,
+  rayAlpha,
+  rayScale,
+  speedFactor,
+  type MotionFx,
+} from './motionFx';
 import type { WorldSnapshot } from '../sim/physicsWorld';
 import type {
   BallPalette,
@@ -29,12 +42,24 @@ const LEADER_COLOR = 0xf7fbff;
 const LEADER_RIM_ALPHA = 0.94;
 const LEADER_HALO_ALPHA = 0.18;
 const LEADER_HALO_SCALE = 1.75;
+const BALL_STAR_INNER_RATIO = 0.5;
+// Ball trail segments: width and opacity taper toward the oldest point.
+// Per segment; about five resampled segments overlap near the head.
+const BALL_TRAIL_ALPHA = 0.24;
+const BALL_TRAIL_SPACING_RADII = 0.4;
+const BALL_TRAIL_MIN_WIDTH = 0.15;
 
 export class PixiRenderer {
   private readonly app = new Application();
   private readonly particles = new Graphics();
   private readonly control = new Graphics();
   private readonly table = new Graphics();
+  private readonly ballTrail = new Graphics();
+  private readonly ballTrailHistory = new TrailHistory();
+  private readonly ballSpeedHold = new SpeedHold();
+  private ballRays: Sprite | null = null;
+  private particleFx: MotionFx = NO_MOTION_FX;
+  private ballFx: MotionFx = NO_MOTION_FX;
   private spriteParticles: SpriteParticleLayer | null = null;
   private tableWidth = -1;
   private tableHeight = -1;
@@ -111,11 +136,22 @@ export class PixiRenderer {
 
     this.app.canvas.className = 'stage';
     this.root.appendChild(this.app.canvas);
+    this.ballRays = new Sprite(rayTexture());
+    this.ballRays.anchor.set(0.5);
+    this.ballRays.blendMode = 'add';
+    this.ballRays.visible = false;
     if (this.particleRenderer === 'sprite') {
       this.spriteParticles = new SpriteParticleLayer(this.particleRimWidthPercent);
-      this.app.stage.addChild(this.table, this.spriteParticles.view, this.control);
+      this.app.stage.addChild(
+        this.table,
+        this.spriteParticles.view,
+        this.ballTrail,
+        this.control,
+        this.ballRays,
+      );
+      this.setParticleFx(this.particleFx);
     } else {
-      this.app.stage.addChild(this.table, this.particles, this.control);
+      this.app.stage.addChild(this.table, this.particles, this.ballTrail, this.control, this.ballRays);
     }
   }
 
@@ -140,6 +176,7 @@ export class PixiRenderer {
 
   dispose() {
     this.spriteParticles?.destroy();
+    this.ballRays?.texture.destroy(true);
     this.app.destroy(true);
   }
 
@@ -186,6 +223,24 @@ export class PixiRenderer {
 
   setBallRimEnabled(enabled: boolean) {
     this.ballRimEnabled = enabled;
+  }
+
+  // PoC motion effects; the `graphics` particle path ignores them.
+  setParticleFx(fx: MotionFx) {
+    this.particleFx = fx;
+    this.spriteParticles?.setEffects(fx.rays, fx.trail, fx.raysTurn);
+    this.spriteParticles?.setShape(fx.star ? 'star' : 'circle');
+  }
+
+  setBallFx(fx: MotionFx) {
+    if (!fx.rays) {
+      this.ballSpeedHold.reset();
+    }
+    if (!fx.trail) {
+      this.ballTrailHistory.clear();
+      this.ballTrail.clear();
+    }
+    this.ballFx = fx;
   }
 
   private drawTable(width: number, height: number) {
@@ -274,7 +329,7 @@ export class PixiRenderer {
         color = LEADER_COLOR;
         alpha = LEADER_RIM_ALPHA;
       }
-      layer.setParticle(index, dot.x, dot.y, dot.radius, color, alpha);
+      layer.setParticle(index, dot.x, dot.y, dot.radius, color, alpha, dot.vx, dot.vy, dot.speed);
     }
 
     if (leaderVisible) {
@@ -295,36 +350,124 @@ export class PixiRenderer {
   private drawControl(snapshot: WorldSnapshot) {
     const ball = snapshot.controlBall;
     this.control.clear();
+    if (this.ballRays) {
+      this.ballRays.visible = false;
+    }
     if (!ball.visible) {
+      this.ballTrailHistory.clear();
+      this.ballTrail.clear();
       return;
     }
 
     const style = ballStyle(this.ballPalette);
-    this.control
-      .circle(ball.x, ball.y, ball.radius * 1.04)
-      .fill({ color: style.glow, alpha: style.glowAlpha });
-    this.control
-      .circle(ball.x, ball.y, ball.radius)
-      .fill({ color: style.fill, alpha: style.fillAlpha });
-    this.control.circle(ball.x - ball.radius * 0.18, ball.y - ball.radius * 0.2, ball.radius * 0.56).fill({
-      color: style.highlight,
-      alpha: style.highlightAlpha,
-    });
-    this.control.circle(ball.x + ball.radius * 0.18, ball.y + ball.radius * 0.18, ball.radius * 0.72).fill({
-      color: style.shade,
-      alpha: style.shadeAlpha,
-    });
-    if (this.ballRimEnabled) {
-      this.control.circle(ball.x, ball.y, ball.radius).stroke({
-        color: style.stroke,
-        width: 2,
-        alpha: style.strokeAlpha,
+    if (this.ballFx.trail) {
+      this.drawBallTrail(ball, style.fill);
+    }
+
+    if (this.ballFx.star) {
+      const outer = ball.radius * 1.3;
+      const inner = outer * BALL_STAR_INNER_RATIO;
+      this.control
+        .star(ball.x, ball.y, 5, outer * 1.04, inner * 1.04)
+        .fill({ color: style.glow, alpha: style.glowAlpha });
+      this.control.star(ball.x, ball.y, 5, outer, inner).fill({ color: style.fill, alpha: style.fillAlpha });
+      if (this.ballRimEnabled) {
+        this.control.star(ball.x, ball.y, 5, outer, inner).stroke({
+          color: style.stroke,
+          width: 2,
+          alpha: style.strokeAlpha,
+        });
+      }
+    } else {
+      this.control
+        .circle(ball.x, ball.y, ball.radius * 1.04)
+        .fill({ color: style.glow, alpha: style.glowAlpha });
+      this.control
+        .circle(ball.x, ball.y, ball.radius)
+        .fill({ color: style.fill, alpha: style.fillAlpha });
+      this.control.circle(ball.x - ball.radius * 0.18, ball.y - ball.radius * 0.2, ball.radius * 0.56).fill({
+        color: style.highlight,
+        alpha: style.highlightAlpha,
       });
+      this.control.circle(ball.x + ball.radius * 0.18, ball.y + ball.radius * 0.18, ball.radius * 0.72).fill({
+        color: style.shade,
+        alpha: style.shadeAlpha,
+      });
+      if (this.ballRimEnabled) {
+        this.control.circle(ball.x, ball.y, ball.radius).stroke({
+          color: style.stroke,
+          width: 2,
+          alpha: style.strokeAlpha,
+        });
+      }
     }
     this.control.circle(ball.x, ball.y, Math.max(ball.radius * 0.16, 4)).fill({
       color: style.center,
       alpha: style.centerAlpha,
     });
+
+    if (this.ballFx.rays && this.ballRays) {
+      const motion = this.ballSpeedHold.update(ball.speed, ball.vx, ball.vy, performance.now());
+      const factor = speedFactor(motion.speed, BALL_CURVE);
+      this.ballRays.visible = true;
+      this.ballRays.position.set(ball.x, ball.y);
+      this.ballRays.rotation = this.ballFx.raysTurn ? motion.heading : 0;
+      this.ballRays.scale.set(rayScale(factor, ball.radius) / RAY_TEXTURE_RADIUS);
+      // Additive: the light highlight color reads on every palette.
+      this.ballRays.tint = style.highlight;
+      this.ballRays.alpha = rayAlpha(factor);
+    }
+  }
+
+  // Comet tail from the ball's recent path: round-capped segments that thin
+  // and fade along the path, so the tail bends with the motion. The drawn
+  // length is capped by path distance, and segments also fade with age, so
+  // a ball that stops keeps a tail that dissolves gently instead of
+  // vanishing. The path is resampled at a fixed spacing: translucent round
+  // caps overlap, and with raw 16 ms samples a slow ball stacked dozens of
+  // them into an opaque slab.
+  private drawBallTrail(ball: { x: number; y: number; radius: number }, color: number) {
+    const history = this.ballTrailHistory;
+    const now = performance.now();
+    history.push(ball.x, ball.y, now);
+    this.ballTrail.clear();
+    const count = history.length;
+    const maxLength = ball.radius * BALL_TRAIL_MAX_RADII;
+    const maxAgeMs = BALL_TRAIL_SECONDS * 1000;
+    const spacing = ball.radius * BALL_TRAIL_SPACING_RADII;
+    let travelled = 0;
+    let pending = 0;
+    let from = history.at(0);
+
+    for (let index = 1; index < count && travelled < maxLength; index += 1) {
+      const to = history.at(index);
+      const step = Math.hypot(to.x - history.at(index - 1).x, to.y - history.at(index - 1).y);
+      travelled += step;
+      pending += step;
+      if (pending < spacing && index < count - 1) {
+        continue;
+      }
+      if (pending === 0) {
+        continue;
+      }
+      pending = 0;
+      const segmentFrom = from;
+      from = to;
+      // Segments inside the ball would show through the star shape and the
+      // translucent fill as a disc; the visible tail starts at the edge.
+      if (Math.hypot(to.x - ball.x, to.y - ball.y) < ball.radius) {
+        continue;
+      }
+      const along = Math.min(travelled / maxLength, 1);
+      const fresh = Math.max(1 - (now - to.time) / maxAgeMs, 0);
+      const width = ball.radius * 2 * Math.max(1 - along, BALL_TRAIL_MIN_WIDTH);
+      this.ballTrail.moveTo(segmentFrom.x, segmentFrom.y).lineTo(to.x, to.y).stroke({
+        color,
+        width,
+        alpha: BALL_TRAIL_ALPHA * (1 - along) * Math.sqrt(fresh),
+        cap: 'round',
+      });
+    }
   }
 
   private ensureParticleColors(count: number) {

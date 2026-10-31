@@ -298,6 +298,7 @@ export class DotpingApp {
     this.renderer.setParticleLeaderVisible(this.shouldShowParticleLeader());
     this.renderer.setBallPalette(this.settings.controlBallPalette);
     this.renderer.setBallRimEnabled(this.settings.controlBallRimEnabled);
+    this.applyMotionFx();
 
     this.physics = new DotpingPhysicsWorld(
       this.rapier,
@@ -778,6 +779,42 @@ export class DotpingApp {
       onInput: (value) => this.updateSettings({ particleGlowVividness: value }, false),
     }));
 
+    // PoC motion effects: visual only, outside presets, so they never mark a
+    // preset as customized.
+    type FxKey =
+      | 'particleFxRays' | 'particleFxRaysTurn' | 'particleFxTrail' | 'particleFxStar'
+      | 'ballFxRays' | 'ballFxRaysTurn' | 'ballFxTrail' | 'ballFxStar';
+    const fxToggle = (
+      card: 'ball' | 'particles',
+      name: string,
+      label: string,
+      key: FxKey,
+      enabled?: () => boolean,
+    ) =>
+      el(toggleSetting({
+        id: `${card}.fx${name}`,
+        card,
+        label,
+        panelLabel: `${card === 'ball' ? 'Ball' : 'Particle'} ${label.toLowerCase()} (PoC)`,
+        visual: true,
+        read: () => this.settings[key],
+        enabled,
+        onChange: (checked) => this.updateSettings({ [key]: checked }, false, false),
+      }));
+    // `Turn`: Rays follow the direction of motion instead of a fixed X.
+    const ballFxRays = fxToggle('ball', 'Rays', 'Rays', 'ballFxRays');
+    const ballFxRaysTurn = fxToggle(
+      'ball', 'RaysTurn', 'Turn', 'ballFxRaysTurn', () => this.settings.ballFxRays,
+    );
+    const ballFxTrail = fxToggle('ball', 'Trail', 'Trail', 'ballFxTrail');
+    const ballFxStar = fxToggle('ball', 'Star', 'Star', 'ballFxStar');
+    const particleFxRays = fxToggle('particles', 'Rays', 'Rays', 'particleFxRays');
+    const particleFxRaysTurn = fxToggle(
+      'particles', 'RaysTurn', 'Turn', 'particleFxRaysTurn', () => this.settings.particleFxRays,
+    );
+    const particleFxTrail = fxToggle('particles', 'Trail', 'Trail', 'particleFxTrail');
+    const particleFxStar = fxToggle('particles', 'Star', 'Star', 'particleFxStar');
+
     const wallBounce = el(rangeSetting({
       id: 'interaction.wallBounce',
       card: 'interaction',
@@ -988,6 +1025,10 @@ export class DotpingApp {
       ballDamping,
       ballColor,
       ballRim,
+      ballFxRays,
+      ballFxRaysTurn,
+      ballFxTrail,
+      ballFxStar,
     ], ballPin);
     const dotsGroup = createSettingsGroup('Particles', 'particles', [
       particleCount,
@@ -999,6 +1040,10 @@ export class DotpingApp {
       particleGlow,
       particleBrightness,
       particleVivid,
+      particleFxRays,
+      particleFxRaysTurn,
+      particleFxTrail,
+      particleFxStar,
     ], particlesPin);
     const interactionGroup = createSettingsGroup('Interaction', 'interaction', [
       wallBounce,
@@ -1426,6 +1471,23 @@ export class DotpingApp {
     this.renderer?.setParticleLeaderVisible(this.shouldShowParticleLeader());
     this.renderer?.setBallPalette(this.settings.controlBallPalette);
     this.renderer?.setBallRimEnabled(this.settings.controlBallRimEnabled);
+    this.applyMotionFx();
+  }
+
+  private applyMotionFx() {
+    const settings = this.settings;
+    this.renderer?.setParticleFx({
+      rays: settings.particleFxRays,
+      raysTurn: settings.particleFxRaysTurn,
+      trail: settings.particleFxTrail,
+      star: settings.particleFxStar,
+    });
+    this.renderer?.setBallFx({
+      rays: settings.ballFxRays,
+      raysTurn: settings.ballFxRaysTurn,
+      trail: settings.ballFxTrail,
+      star: settings.ballFxStar,
+    });
   }
 
   private shouldShowParticleLeader() {

@@ -45,6 +45,8 @@ export type ParticleDiagnostics = {
 export type DotSnapshot = {
   x: number;
   y: number;
+  vx: number;
+  vy: number;
   radius: number;
   speed: number;
   visible: boolean;
@@ -266,6 +268,8 @@ export class DotpingPhysicsWorld {
       return {
         x: pos.x,
         y: pos.y,
+        vx: vel.x,
+        vy: vel.y,
         radius: this.settings.particleRadius,
         speed: Math.hypot(vel.x, vel.y),
         visible: true,
@@ -281,6 +285,8 @@ export class DotpingPhysicsWorld {
       controlBall: {
         x: controlPosition.x,
         y: controlPosition.y,
+        vx: controlVelocity.x,
+        vy: controlVelocity.y,
         radius: this.settings.controlBallRadius,
         speed: Math.hypot(controlVelocity.x, controlVelocity.y),
         visible: this.controlBallPresent,

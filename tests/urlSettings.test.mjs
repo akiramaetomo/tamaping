@@ -53,3 +53,18 @@ test('url debug parameters open the debug overlay', () => {
   }
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?debug=0').debug, DEFAULT_SETTINGS.debug);
 });
+
+test('url fx parameter turns the PoC motion effects on for dots and ball', () => {
+  const off = settingsFromUrl(DEFAULT_SETTINGS, '');
+  assert.equal(off.particleFxRays || off.particleFxTrail || off.particleFxStar, false);
+  assert.equal(off.ballFxRays || off.ballFxTrail || off.ballFxStar, false);
+
+  const trail = settingsFromUrl(DEFAULT_SETTINGS, '?fx=trail');
+  assert.equal(trail.particleFxTrail, true);
+  assert.equal(trail.ballFxTrail, true);
+  assert.equal(trail.particleFxRays, false);
+
+  const all = settingsFromUrl(DEFAULT_SETTINGS, '?fx=rays,trail,star,bogus');
+  assert.equal(all.particleFxRays && all.ballFxRays, true);
+  assert.equal(all.particleFxStar && all.ballFxStar, true);
+});

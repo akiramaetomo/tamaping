@@ -53,6 +53,15 @@ export type DotpingSettings = {
   particleLinearDamping: number;
   controlBallPalette: BallPalette;
   controlBallRimEnabled: boolean;
+  // Experimental motion effects (PoC); not stored in presets.
+  particleFxRays: boolean;
+  particleFxRaysTurn: boolean;
+  particleFxTrail: boolean;
+  particleFxStar: boolean;
+  ballFxRays: boolean;
+  ballFxRaysTurn: boolean;
+  ballFxTrail: boolean;
+  ballFxStar: boolean;
   controlBallMode: ControlBallMode;
   controlBallRadius: number;
   controlBallMass: number;
@@ -96,6 +105,14 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   particleLinearDamping: 0.01,
   controlBallPalette: 'blue',
   controlBallRimEnabled: true,
+  particleFxRays: false,
+  particleFxRaysTurn: false,
+  particleFxTrail: false,
+  particleFxStar: false,
+  ballFxRays: false,
+  ballFxRaysTurn: false,
+  ballFxTrail: false,
+  ballFxStar: false,
   controlBallMode: 'persistent',
   controlBallRadius: 52,
   controlBallMass: 100,
