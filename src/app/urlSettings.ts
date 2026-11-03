@@ -22,7 +22,9 @@ export function settingsFromUrl(defaults: DotpingSettings, search: string): Dotp
     settings.particleRenderer = particleRenderer;
   }
 
-  // `?fx=rays,trail,star` turns the PoC motion effects on for dots and ball.
+  // `?fx=rays,trail,afterglow` turns the PoC motion effects on for dots and ball;
+  // `star`, `fish` or `none` sets both shapes (`none` shows the effects
+  // alone), and `shapeturn` turns them to the direction of motion.
   const fx = (params.get('fx') ?? '').split(',');
   if (fx.includes('rays')) {
     settings.particleFxRays = true;
@@ -32,9 +34,19 @@ export function settingsFromUrl(defaults: DotpingSettings, search: string): Dotp
     settings.particleFxTrail = true;
     settings.ballFxTrail = true;
   }
-  if (fx.includes('star')) {
-    settings.particleFxStar = true;
-    settings.ballFxStar = true;
+  if (fx.includes('afterglow')) {
+    settings.particleFxAfterglow = true;
+    settings.ballFxAfterglow = true;
+  }
+  for (const shape of ['star', 'fish', 'none'] as const) {
+    if (fx.includes(shape)) {
+      settings.particleShape = shape;
+      settings.ballShape = shape;
+    }
+  }
+  if (fx.includes('shapeturn')) {
+    settings.particleShapeTurn = true;
+    settings.ballShapeTurn = true;
   }
 
   if (debugVisibleFromParams(params)) {

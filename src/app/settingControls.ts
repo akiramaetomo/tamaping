@@ -25,6 +25,7 @@ export type RangeSettingSpec = ControlSpecBase & {
   slider: () => number;
   format: () => string;
   onInput: (value: number) => void;
+  enabled?: () => boolean;
   visual?: boolean;
   // Returns an optional cleanup for when a My Panel copy is removed.
   decorate?: (control: RangeControl) => (() => void) | void;
@@ -71,11 +72,20 @@ export function rangeSetting(spec: RangeSettingSpec): ControlDefinition {
         changed();
       });
       const dispose = spec.decorate?.(control) ?? undefined;
+      const syncEnabled = () => {
+        if (spec.enabled) {
+          const enabled = spec.enabled();
+          control.input.disabled = !enabled;
+          control.wrap.classList.toggle('is-disabled', !enabled);
+        }
+      };
+      syncEnabled();
       return {
         element: control.wrap,
         sync: () => {
           control.input.value = `${spec.slider()}`;
           control.value.textContent = spec.format();
+          syncEnabled();
         },
         dispose,
       };

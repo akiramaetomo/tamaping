@@ -1,5 +1,6 @@
-// Experimental motion effects (PoC): light rays, comet trail and star shape.
-// Physics stays circular; these only change how a moving dot is drawn.
+// Experimental shapes and motion effects (PoC): one body shape, with light
+// rays and a comet trail drawn over it. Physics stays circular; these only
+// change how a dot is drawn.
 //
 // The app is about near-stillness: the slower a dot, the more delicate the
 // effect must be, but it must never vanish. Strengths therefore follow a
@@ -7,16 +8,58 @@
 // which spends most of its range on speeds a player can barely see, and
 // nothing switches off at a threshold.
 
+import type { BodyShape } from '../sim/settings';
+
 export type MotionFx = {
+  shape: BodyShape;
+  // The shape turns to the direction of motion (Fish and Star only).
+  shapeTurn: boolean;
   rays: boolean;
   // Rays turn with the direction of motion; off keeps a fixed upright X,
   // which the user found calmer.
   raysTurn: boolean;
+  // Spike outline curvature, -1 to 1; see rayShapeExponent.
+  raysCurve: number;
   trail: boolean;
-  star: boolean;
+  // Afterglow buffer: the body leaves a fading glow along its path.
+  afterglow: boolean;
 };
 
-export const NO_MOTION_FX: MotionFx = { rays: false, raysTurn: false, trail: false, star: false };
+export const NO_MOTION_FX: MotionFx = {
+  shape: 'circle',
+  shapeTurn: false,
+  rays: false,
+  raysTurn: false,
+  raysCurve: 1,
+  trail: false,
+  afterglow: false,
+};
+
+// The `Curve` setting maps to the spike's superellipse exponent 2^curve:
+// 1 is the original brush-tip ellipse, 0 straight sides, and -1 sides that
+// curve inwards (an astroid, the four-cusp hypocycloid, is about -0.585).
+export const RAY_CURVE_MIN = -1;
+export const RAY_CURVE_MAX = 1;
+
+export function rayShapeExponent(curve: number) {
+  const value = Number.isFinite(curve) ? curve : RAY_CURVE_MAX;
+  return 2 ** Math.max(RAY_CURVE_MIN, Math.min(value, RAY_CURVE_MAX));
+}
+
+// Only shapes with a front can turn; a circle (or no body) looks the same
+// at every angle.
+export function shapeTurns(shape: BodyShape) {
+  return shape === 'fish' || shape === 'star';
+}
+
+// Body rotation for a heading (0 = +x). The fish's head faces +x; the star
+// points up, so a quarter turn puts one point in front.
+export function shapeRotation(shape: BodyShape, turn: boolean, heading: number) {
+  if (!turn || !shapeTurns(shape)) {
+    return 0;
+  }
+  return shape === 'star' ? heading + Math.PI / 2 : heading;
+}
 
 export type SpeedCurve = { knee: number; full: number };
 
@@ -48,6 +91,71 @@ const RAY_MAX_ALPHA = 0.95;
 export const BALL_TRAIL_SECONDS = 2.5;
 export const BALL_TRAIL_SAMPLE_MS = 16;
 export const BALL_TRAIL_MAX_RADII = 12;
+
+// Afterglow (afterglow.ts), design knobs:
+// - AFTERGLOW_SECONDS: how long a fast body's glow lives.
+// - AFTERGLOW_FADE_SECONDS: the glow's light falls to 37% after this long
+//   (to 5% after three times this), at any frame rate.
+// - AFTERGLOW_MIN_LENGTH_RADII: a slower body's glow lives longer, so that
+//   it reaches at least this many radii behind the body.
+// - AFTERGLOW_MAX_SECONDS: the longest any glow lives, so an almost still
+//   body does not paint for long.
+// - AFTERGLOW_STRENGTH: opacity of the glow at its brightest.
+export const AFTERGLOW_SECONDS = 0.9;
+export const AFTERGLOW_FADE_SECONDS = 0.6;
+export const AFTERGLOW_MIN_LENGTH_RADII = 6;
+export const AFTERGLOW_MAX_SECONDS = 3;
+export const AFTERGLOW_STRENGTH = 0.45;
+
+// Seconds the glow left by a body at this speed lives (on its centre line):
+// long enough to reach the minimum length, within the limits. Below the
+// speed that needs the longest life, the life shrinks back toward the
+// short one, so an almost still (jittering) body does not paint for long.
+export function afterglowLife(speed: number, radius: number) {
+  const minLength = AFTERGLOW_MIN_LENGTH_RADII * Math.max(radius, 0);
+  if (!(speed > 0) || !(minLength > 0)) {
+    return AFTERGLOW_SECONDS;
+  }
+  const slowest = minLength / AFTERGLOW_MAX_SECONDS;
+  if (speed < slowest) {
+    return AFTERGLOW_SECONDS + (AFTERGLOW_MAX_SECONDS - AFTERGLOW_SECONDS) * (speed / slowest);
+  }
+  return Math.min(Math.max(minLength / speed, AFTERGLOW_SECONDS), AFTERGLOW_MAX_SECONDS);
+}
+
+// A longer-lived glow is drawn dimmer, so that slow bodies leave a longer
+// but quieter glow: colour brightness sqrt(short life / life).
+export function afterglowBrightness(life: number) {
+  return life > AFTERGLOW_SECONDS ? Math.sqrt(AFTERGLOW_SECONDS / life) : 1;
+}
+
+// A colour with its brightness scaled, for a dimmer glow.
+export function scaleColor(rgb: number, scale: number) {
+  const k = Math.max(0, Math.min(scale, 1));
+  const r = Math.round(((rgb >> 16) & 0xff) * k);
+  const g = Math.round(((rgb >> 8) & 0xff) * k);
+  const b = Math.round((rgb & 0xff) * k);
+  return (r << 16) | (g << 8) | b;
+}
+
+// The tint a stamp uses for a glow of this life: the colour, dimmed by
+// afterglowBrightness and scaled by AFTERGLOW_SECONDS / life, because the
+// stamp's opacity (life / AFTERGLOW_MAX_SECONDS) also multiplies its light.
+// `age` stamps the glow as if it were that many seconds old already: its
+// opacity is then (life - age) / AFTERGLOW_MAX_SECONDS, and its light has
+// faded by that much.
+export function afterglowTint(rgb: number, life: number, age = 0) {
+  const seconds = Math.max(life, AFTERGLOW_SECONDS);
+  const stored = Math.max(seconds - Math.max(age, 0), 1e-3);
+  const light = Math.exp(-Math.max(age, 0) / AFTERGLOW_FADE_SECONDS);
+  return scaleColor(rgb, (afterglowBrightness(seconds) * AFTERGLOW_SECONDS * light) / stored);
+}
+
+// Share of the longest life that one frame of this length uses up. The
+// glow is aged by time, not by frame count. A long stall clears it.
+export function afterglowDecay(seconds: number) {
+  return seconds > 0 ? seconds / AFTERGLOW_MAX_SECONDS : 0;
+}
 
 export function speedFactor(speed: number, curve: SpeedCurve = DOT_CURVE) {
   if (!(speed > 0) || !(curve.knee > 0) || !(curve.full > 0)) {

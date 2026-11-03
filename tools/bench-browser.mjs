@@ -80,8 +80,14 @@ function findAdb() {
   return candidates.find((candidate) => candidate && existsSync(candidate)) ?? 'adb';
 }
 
+// Android Chrome's DevTools socket does not answer while Chrome is frozen
+// in the background (for example when the phone dozes), so time out with a
+// clear message instead of hanging.
 async function listTargets(port) {
-  const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+  const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(8000) })
+    .catch((error) => {
+      throw new Error(`Chrome DevTools did not answer (${error.message}). Wake the phone and keep Chrome in front.`);
+    });
   return response.json();
 }
 
@@ -148,6 +154,15 @@ async function runAndroid(baseUrl, options) {
   const model = run('shell', 'getprop', 'ro.product.model');
   run('reverse', `tcp:${PREVIEW_PORT}`, `tcp:${PREVIEW_PORT}`);
   run('forward', `tcp:${ANDROID_CDP_PORT}`, 'localabstract:chrome_devtools_remote');
+  // A dozing phone freezes Chrome; wake it and bring Chrome to the front.
+  // Behind the lock screen Chrome stays paused, and only the user can unlock.
+  run('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP');
+  await sleep(500);
+  if (/isKeyguardShowing=true/.test(run('shell', 'dumpsys', 'window'))) {
+    throw new Error('The phone shows its lock screen. Unlock it, then run the bench again.');
+  }
+  run('shell', 'am', 'start', '-n', 'com.android.chrome/com.google.android.apps.chrome.Main');
+  await sleep(2000);
   let page = null;
   try {
     // Android Chrome refuses /json/new, so open the tab with an intent and

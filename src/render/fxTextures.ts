@@ -13,10 +13,26 @@ export const TRAIL_TEXTURE_HEIGHT = 64;
 export const TRAIL_HEAD_RADIUS = TRAIL_TEXTURE_HEIGHT / 2;
 export const TRAIL_HEAD_X = TRAIL_TEXTURE_WIDTH - TRAIL_HEAD_RADIUS;
 
-export function rayTexture() {
+// `exponent` is the spike outline's superellipse exponent: 2 is the original
+// ellipse (a brush tip), 1 a diamond with straight sides, and below 1 the
+// sides curve inwards (2/3 is an astroid).
+export function rayTexture(exponent = 2) {
   const canvas = createCanvas(RAY_TEXTURE_SIZE, RAY_TEXTURE_SIZE);
+  drawRays(canvas, exponent);
+  return texture(canvas, true);
+}
+
+// Redrawn in place, like the particle body texture: destroying a texture that
+// the shared particle shader still binds also destroys its bind group.
+export function redrawRayTexture(target: Texture, exponent: number) {
+  drawRays(target.source.resource as HTMLCanvasElement, exponent);
+  target.source.update();
+}
+
+function drawRays(canvas: HTMLCanvasElement, exponent: number) {
   const context = context2d(canvas);
   const center = RAY_TEXTURE_SIZE / 2;
+  context.clearRect(0, 0, RAY_TEXTURE_SIZE, RAY_TEXTURE_SIZE);
 
   const core = context.createRadialGradient(center, center, 0, center, center, center * 0.42);
   core.addColorStop(0, 'rgba(255,255,255,0.9)');
@@ -28,9 +44,8 @@ export function rayTexture() {
   // An X: two equal spikes at +-45 degrees to the texture's x axis, which
   // the sprite turns to the direction of motion.
   // Thickness is a share of the texture size; 0.02 read as needles.
-  drawSpike(context, center, Math.PI / 4, 1, 0.05);
-  drawSpike(context, center, -Math.PI / 4, 1, 0.05);
-  return texture(canvas, true);
+  drawSpike(context, center, Math.PI / 4, 1, 0.05, exponent);
+  drawSpike(context, center, -Math.PI / 4, 1, 0.05, exponent);
 }
 
 export function trailTexture() {
@@ -75,6 +90,7 @@ function drawSpike(
   angle: number,
   length: number,
   thickness: number,
+  exponent: number,
 ) {
   const half = RAY_TEXTURE_RADIUS * length;
   context.save();
@@ -89,10 +105,36 @@ function drawSpike(
   gradient.addColorStop(0.9, 'rgba(255,255,255,0.3)');
   gradient.addColorStop(1, 'rgba(255,255,255,0)');
   context.fillStyle = gradient;
-  context.beginPath();
-  context.ellipse(0, 0, half, RAY_TEXTURE_SIZE * thickness, 0, 0, Math.PI * 2);
+  superellipsePath(context, half, RAY_TEXTURE_SIZE * thickness, exponent);
   context.fill();
   context.restore();
+}
+
+// |x/a|^n + |y/b|^n = 1, sampled by angle. Larger powers bunch the samples
+// near the tips, which is where the concave shapes need them.
+const SUPERELLIPSE_STEPS = 128;
+
+function superellipsePath(
+  context: CanvasRenderingContext2D,
+  a: number,
+  b: number,
+  exponent: number,
+) {
+  const power = 2 / exponent;
+  context.beginPath();
+  for (let index = 0; index < SUPERELLIPSE_STEPS; index += 1) {
+    const angle = (index / SUPERELLIPSE_STEPS) * Math.PI * 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const x = a * Math.sign(cos) * Math.abs(cos) ** power;
+    const y = b * Math.sign(sin) * Math.abs(sin) ** power;
+    if (index === 0) {
+      context.moveTo(x, y);
+    } else {
+      context.lineTo(x, y);
+    }
+  }
+  context.closePath();
 }
 
 function createCanvas(width: number, height: number) {

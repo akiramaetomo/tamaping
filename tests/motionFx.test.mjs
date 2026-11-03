@@ -2,15 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  AFTERGLOW_FADE_SECONDS,
+  AFTERGLOW_MAX_SECONDS,
+  AFTERGLOW_MIN_LENGTH_RADII,
+  AFTERGLOW_SECONDS,
   BALL_CURVE,
   DOT_CURVE,
+  NO_MOTION_FX,
   SpeedHold,
   TRAIL_MAX_RADII,
   TrailHistory,
+  afterglowBrightness,
+  afterglowDecay,
+  afterglowLife,
+  afterglowTint,
   followDirection,
   headingOf,
   rayAlpha,
   rayScale,
+  rayShapeExponent,
+  scaleColor,
+  shapeRotation,
+  shapeTurns,
   speedFactor,
   trailAlpha,
   trailLength,
@@ -65,6 +78,30 @@ test('rays are always on, at least twice the radius, and grow with speed', () =>
   assert.ok(rayAlpha(5) <= 1);
 });
 
+test('rays curve maps convex, straight and concave to superellipse exponents', () => {
+  assert.equal(rayShapeExponent(1), 2);
+  assert.equal(rayShapeExponent(0), 1);
+  assert.equal(rayShapeExponent(-1), 0.5);
+  assert.ok(Math.abs(rayShapeExponent(Math.log2(2 / 3)) - 2 / 3) < 1e-12);
+  assert.equal(rayShapeExponent(3), 2);
+  assert.equal(rayShapeExponent(-3), 0.5);
+  assert.equal(rayShapeExponent(Number.NaN), 2);
+  assert.equal(rayShapeExponent(NO_MOTION_FX.raysCurve), 2);
+});
+
+test('shape turn only rotates shapes with a front', () => {
+  assert.equal(NO_MOTION_FX.shapeTurn, false);
+  assert.equal(shapeTurns('fish'), true);
+  assert.equal(shapeTurns('star'), true);
+  assert.equal(shapeTurns('circle'), false);
+  assert.equal(shapeTurns('none'), false);
+  assert.equal(shapeRotation('fish', true, 1.2), 1.2);
+  // The star points up, so a quarter turn puts a point along the heading.
+  assert.equal(shapeRotation('star', true, 0), Math.PI / 2);
+  assert.equal(shapeRotation('fish', false, 1.2), 0);
+  assert.equal(shapeRotation('circle', true, 1.2), 0);
+});
+
 test('heading follows fast motion quickly and slow motion slowly', () => {
   const [fastX] = followDirection(1, 0, 0, 500, 500, speedFactor(500));
   const [slowX] = followDirection(1, 0, 0, 1, 1, speedFactor(1));
@@ -113,4 +150,68 @@ test('speed hold bridges zero-speed frames and then decays', () => {
 
   hold.reset();
   assert.equal(hold.update(0, 0, 0, 2000).speed, 0);
+});
+
+test('afterglow ages by time, not frame rate, and clears after a stall', () => {
+  assert.equal(afterglowDecay(0), 0);
+  assert.equal(afterglowDecay(-1), 0);
+  assert.equal(afterglowDecay(Number.NaN), 0);
+  // 30, 60 and 120 fps use up the same life in one second.
+  const used = (fps) => afterglowDecay(1 / fps) * fps;
+  assert.ok(Math.abs(used(30) - used(120)) < 1e-12);
+  assert.ok(afterglowDecay(AFTERGLOW_MAX_SECONDS) >= 1);
+  assert.equal(NO_MOTION_FX.afterglow, false);
+});
+
+test('afterglow lives longer for slow bodies, within its limits', () => {
+  const radius = 8;
+  // Fast: the short life.
+  assert.equal(afterglowLife(1000, radius), AFTERGLOW_SECONDS);
+  // Slow: long enough to reach the minimum length behind the body.
+  const speed = 30;
+  const life = afterglowLife(speed, radius);
+  assert.ok(life > AFTERGLOW_SECONDS && life < AFTERGLOW_MAX_SECONDS);
+  assert.ok(Math.abs(speed * life - AFTERGLOW_MIN_LENGTH_RADII * radius) < 1e-9);
+  // The slowest speed that still reaches the minimum length gets the
+  // longest life; below it, almost still bodies fall back to the short one.
+  const slowest = (AFTERGLOW_MIN_LENGTH_RADII * radius) / AFTERGLOW_MAX_SECONDS;
+  assert.ok(Math.abs(afterglowLife(slowest, radius) - AFTERGLOW_MAX_SECONDS) < 1e-9);
+  assert.ok(afterglowLife(slowest * 0.5, radius) < AFTERGLOW_MAX_SECONDS);
+  assert.ok(afterglowLife(slowest * 0.5, radius) > AFTERGLOW_SECONDS);
+  assert.ok(afterglowLife(0.01, radius) - AFTERGLOW_SECONDS < 0.01);
+  assert.equal(afterglowLife(0, radius), AFTERGLOW_SECONDS);
+  assert.equal(afterglowLife(Number.NaN, radius), AFTERGLOW_SECONDS);
+});
+
+test('a longer-lived afterglow is dimmer, and colours scale per channel', () => {
+  assert.equal(afterglowBrightness(AFTERGLOW_SECONDS), 1);
+  assert.equal(afterglowBrightness(0), 1);
+  const slow = afterglowBrightness(AFTERGLOW_MAX_SECONDS);
+  assert.ok(slow > 0 && slow < 1);
+  assert.ok(Math.abs(slow - Math.sqrt(AFTERGLOW_SECONDS / AFTERGLOW_MAX_SECONDS)) < 1e-12);
+  assert.equal(scaleColor(0xff8040, 1), 0xff8040);
+  assert.equal(scaleColor(0xff8040, 0.5), 0x804020);
+  assert.equal(scaleColor(0xffffff, 0), 0);
+  assert.equal(scaleColor(0x123456, 2), 0x123456);
+});
+
+test('afterglow tint keeps the light of a fast glow and dims slower ones', () => {
+  // Fast: the stamp's light times its opacity (life share) is the colour
+  // times AFTERGLOW_SECONDS / MAX, the same for every life except dimming.
+  const share = (life) => life / AFTERGLOW_MAX_SECONDS;
+  const light = (life) => (afterglowTint(0xff0000, life) >> 16) / 255 * share(life);
+  const fast = light(AFTERGLOW_SECONDS);
+  assert.ok(Math.abs(fast - AFTERGLOW_SECONDS / AFTERGLOW_MAX_SECONDS) < 0.01);
+  const slow = light(AFTERGLOW_MAX_SECONDS);
+  assert.ok(Math.abs(slow / fast - afterglowBrightness(AFTERGLOW_MAX_SECONDS)) < 0.02);
+  assert.equal(afterglowTint(0xff0000, 0), afterglowTint(0xff0000, AFTERGLOW_SECONDS));
+});
+
+test('an afterglow stamped as already aged carries that much less life and light', () => {
+  // Opacity (life share) times tint is the stored light.
+  const stored = (age) =>
+    ((afterglowTint(0xff0000, AFTERGLOW_SECONDS, age) >> 16) / 255) * ((AFTERGLOW_SECONDS - age) / AFTERGLOW_MAX_SECONDS);
+  const fresh = stored(0);
+  const aged = stored(0.1);
+  assert.ok(Math.abs(aged / fresh - Math.exp(-0.1 / AFTERGLOW_FADE_SECONDS)) < 0.02);
 });

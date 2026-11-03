@@ -65,6 +65,14 @@ test('current preset export preserves tunable settings and excludes runtime togg
       particleRadius: 64,
       particleRimWidth: 75,
       audioTriggerSpreadMs: 16,
+      particleShape: 'none',
+      ballShape: 'fish',
+      particleShapeTurn: true,
+      particleFxRays: true,
+      particleFxRaysCurve: -0.5,
+      ballFxRaysCurve: 0,
+      particleFxAfterglow: true,
+      ballFxAfterglow: true,
     },
     'audio',
     '  Show Name  ',
@@ -82,6 +90,19 @@ test('current preset export preserves tunable settings and excludes runtime togg
   assert.equal('particleFillEnabled' in exportFile.presets[0].settings, false);
   assert.equal('soundEnabled' in exportFile.presets[0].settings, false);
   assert.equal('debug' in exportFile.presets[0].settings, false);
+  // PoC shapes and motion effects stay outside presets.
+  for (const key of [
+    'particleShape',
+    'ballShape',
+    'particleShapeTurn',
+    'particleFxRays',
+    'particleFxRaysCurve',
+    'ballFxRaysCurve',
+    'particleFxAfterglow',
+    'ballFxAfterglow',
+  ]) {
+    assert.equal(key in exportFile.presets[0].settings, false, key);
+  }
   assert.equal('colliderLayout' in exportFile.presets[0].settings, false);
 });
 

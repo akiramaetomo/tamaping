@@ -56,8 +56,10 @@ test('url debug parameters open the debug overlay', () => {
 
 test('url fx parameter turns the PoC motion effects on for dots and ball', () => {
   const off = settingsFromUrl(DEFAULT_SETTINGS, '');
-  assert.equal(off.particleFxRays || off.particleFxTrail || off.particleFxStar, false);
-  assert.equal(off.ballFxRays || off.ballFxTrail || off.ballFxStar, false);
+  assert.equal(off.particleFxRays || off.particleFxTrail, false);
+  assert.equal(off.ballFxRays || off.ballFxTrail, false);
+  assert.equal(off.particleShape, 'circle');
+  assert.equal(off.ballShape, 'circle');
 
   const trail = settingsFromUrl(DEFAULT_SETTINGS, '?fx=trail');
   assert.equal(trail.particleFxTrail, true);
@@ -66,5 +68,23 @@ test('url fx parameter turns the PoC motion effects on for dots and ball', () =>
 
   const all = settingsFromUrl(DEFAULT_SETTINGS, '?fx=rays,trail,star,bogus');
   assert.equal(all.particleFxRays && all.ballFxRays, true);
-  assert.equal(all.particleFxStar && all.ballFxStar, true);
+  assert.equal(all.particleShape, 'star');
+  assert.equal(all.ballShape, 'star');
+
+  // `none`: effects alone, with no bodies drawn.
+  const bare = settingsFromUrl(DEFAULT_SETTINGS, '?fx=none,rays');
+  assert.equal(bare.particleShape, 'none');
+  assert.equal(bare.ballShape, 'none');
+  assert.equal(bare.particleFxRays, true);
+  assert.equal(bare.particleShapeTurn || bare.ballShapeTurn, false);
+
+  const fish = settingsFromUrl(DEFAULT_SETTINGS, '?fx=fish,shapeturn');
+  assert.equal(fish.particleShape, 'fish');
+  assert.equal(fish.ballShape, 'fish');
+  assert.equal(fish.particleShapeTurn && fish.ballShapeTurn, true);
+  assert.equal(fish.particleFxRaysTurn || fish.ballFxRaysTurn, false);
+  assert.equal(off.particleFxAfterglow || off.ballFxAfterglow, false);
+  const glow = settingsFromUrl(DEFAULT_SETTINGS, '?fx=afterglow');
+  assert.equal(glow.particleFxAfterglow && glow.ballFxAfterglow, true);
+  assert.equal(glow.particleFxTrail || glow.ballFxTrail, false);
 });

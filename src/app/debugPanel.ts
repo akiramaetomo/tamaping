@@ -25,6 +25,8 @@ export type PerfDebugSnapshot = {
   colliderCount: number;
   rendererName: string;
   particleRenderer: string;
+  // PoC afterglow buffer: `off`, or its texture format while on.
+  afterglow?: string;
   devicePixelRatio: number;
   resolution: number;
   viewport: { width: number; height: number };
@@ -149,6 +151,7 @@ export function createPerfDebugLines(snapshot: PerfDebugSnapshot) {
     `colliders=${snapshot.colliderCount}`,
     `renderer=${snapshot.rendererName}`,
     `particle_renderer=${snapshot.particleRenderer}`,
+    ...(snapshot.afterglow ? [`afterglow=${snapshot.afterglow}`] : []),
     `viewport=${Math.round(snapshot.viewport.width)}x${Math.round(snapshot.viewport.height)}`,
     `dpr=${snapshot.devicePixelRatio} resolution=${snapshot.resolution}`,
     ...(snapshot.view ? viewScaleDebugLines(snapshot.view) : []),

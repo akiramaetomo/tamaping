@@ -14,6 +14,7 @@ import {
   type TriggerTestMode,
 } from '../audio/triggerTiming';
 import { PixiRenderer } from '../render/pixiRenderer';
+import { RAY_CURVE_MAX, RAY_CURVE_MIN, shapeTurns } from '../render/motionFx';
 import {
   DotpingPhysicsWorld,
   type ImpactEvent,
@@ -52,6 +53,7 @@ import {
   type DotCombiMode,
   type DotpingSettings,
   type GravityMode,
+  type BodyShape,
   type ParticleGlowMode,
   type ParticlePalette,
 } from '../sim/settings';
@@ -779,41 +781,106 @@ export class DotpingApp {
       onInput: (value) => this.updateSettings({ particleGlowVividness: value }, false),
     }));
 
-    // PoC motion effects: visual only, outside presets, so they never mark a
-    // preset as customized.
+    // PoC shapes and motion effects: visual only, outside presets, so they
+    // never mark a preset as customized. One `Shape` per card; the effect
+    // toggles below it are drawn over that shape.
+    const shapeSelect = (card: 'ball' | 'particles', key: 'particleShape' | 'ballShape') =>
+      el(selectSetting<BodyShape>({
+        id: `${card}.shape`,
+        card,
+        label: 'Shape',
+        panelLabel: `${card === 'ball' ? 'Ball' : 'Particle'} shape (PoC)`,
+        visual: true,
+        options: [
+          ['none', 'None'],
+          ['circle', 'Circle'],
+          ['star', 'Star'],
+          ['fish', 'Fish'],
+        ],
+        read: () => this.settings[key],
+        onChange: (value) => this.updateSettings({ [key]: value as BodyShape }, false, false),
+      }));
+    const ballShape = shapeSelect('ball', 'ballShape');
+    const particleShape = shapeSelect('particles', 'particleShape');
     type FxKey =
-      | 'particleFxRays' | 'particleFxRaysTurn' | 'particleFxTrail' | 'particleFxStar'
-      | 'ballFxRays' | 'ballFxRaysTurn' | 'ballFxTrail' | 'ballFxStar';
+      | 'particleShapeTurn' | 'particleFxRays' | 'particleFxRaysTurn' | 'particleFxTrail'
+      | 'particleFxAfterglow'
+      | 'ballShapeTurn' | 'ballFxRays' | 'ballFxRaysTurn' | 'ballFxTrail' | 'ballFxAfterglow';
     const fxToggle = (
       card: 'ball' | 'particles',
       name: string,
       label: string,
       key: FxKey,
       enabled?: () => boolean,
+      panelName = label.toLowerCase(),
     ) =>
       el(toggleSetting({
         id: `${card}.fx${name}`,
         card,
         label,
-        panelLabel: `${card === 'ball' ? 'Ball' : 'Particle'} ${label.toLowerCase()} (PoC)`,
+        panelLabel: `${card === 'ball' ? 'Ball' : 'Particle'} ${panelName} (PoC)`,
         visual: true,
         read: () => this.settings[key],
         enabled,
         onChange: (checked) => this.updateSettings({ [key]: checked }, false, false),
       }));
+    // Shape `Turn`: a fish or star turns its front to the direction of
+    // motion. Separate from the Rays `Turn`, so an upright X can sit on a
+    // turning fish.
+    const shapeTurn = (card: 'ball' | 'particles', key: 'particleShapeTurn' | 'ballShapeTurn') =>
+      fxToggle(card, 'ShapeTurn', 'Turn', key, () => shapeTurns(
+        card === 'ball' ? this.settings.ballShape : this.settings.particleShape,
+      ), 'shape turn');
+    const ballShapeTurn = shapeTurn('ball', 'ballShapeTurn');
+    const particleShapeTurn = shapeTurn('particles', 'particleShapeTurn');
     // `Turn`: Rays follow the direction of motion instead of a fixed X.
     const ballFxRays = fxToggle('ball', 'Rays', 'Rays', 'ballFxRays');
     const ballFxRaysTurn = fxToggle(
-      'ball', 'RaysTurn', 'Turn', 'ballFxRaysTurn', () => this.settings.ballFxRays,
+      'ball', 'RaysTurn', 'Turn', 'ballFxRaysTurn', () => this.settings.ballFxRays, 'rays turn',
     );
+    // `Curve`: spike outline, 1 convex (brush tip), 0 straight, -1 concave.
+    const fxCurve = (
+      card: 'ball' | 'particles',
+      key: 'particleFxRaysCurve' | 'ballFxRaysCurve',
+      enabled: () => boolean,
+    ) =>
+      el(rangeSetting({
+        id: `${card}.fxRaysCurve`,
+        card,
+        label: 'Curve',
+        panelLabel: `${card === 'ball' ? 'Ball' : 'Particle'} rays curve (PoC)`,
+        visual: true,
+        min: RAY_CURVE_MIN,
+        max: RAY_CURVE_MAX,
+        step: 0.05,
+        slider: () => this.settings[key],
+        format: () => `${this.settings[key] > 0 ? '+' : ''}${this.settings[key].toFixed(2)}`,
+        enabled,
+        onInput: (value) => this.updateSettings({ [key]: value }, false, false),
+      }));
+    const ballFxRaysCurve = fxCurve('ball', 'ballFxRaysCurve', () => this.settings.ballFxRays);
     const ballFxTrail = fxToggle('ball', 'Trail', 'Trail', 'ballFxTrail');
-    const ballFxStar = fxToggle('ball', 'Star', 'Star', 'ballFxStar');
+    // `Afterglow`: the body leaves a glow along its real path that fades out
+    // (a feedback buffer). Not `Glow`, which is the Particles speed colour.
+    const ballFxAfterglow = fxToggle('ball', 'Afterglow', 'Afterglow', 'ballFxAfterglow');
     const particleFxRays = fxToggle('particles', 'Rays', 'Rays', 'particleFxRays');
     const particleFxRaysTurn = fxToggle(
-      'particles', 'RaysTurn', 'Turn', 'particleFxRaysTurn', () => this.settings.particleFxRays,
+      'particles',
+      'RaysTurn',
+      'Turn',
+      'particleFxRaysTurn',
+      () => this.settings.particleFxRays,
+      'rays turn',
     );
-    const particleFxTrail = fxToggle('particles', 'Trail', 'Trail', 'particleFxTrail');
-    const particleFxStar = fxToggle('particles', 'Star', 'Star', 'particleFxStar');
+    const particleFxRaysCurve = fxCurve(
+      'particles', 'particleFxRaysCurve', () => this.settings.particleFxRays,
+    );
+    // Shown as `Tail`: the dot streak reads as a tail, unlike the ball's path
+    // trail. The id and setting key stay `Trail` for saved My Panels and `?fx=`.
+    const particleFxTrail = fxToggle('particles', 'Trail', 'Tail', 'particleFxTrail');
+    const particleFxAfterglow = fxToggle(
+      'particles', 'Afterglow', 'Afterglow', 'particleFxAfterglow',
+    );
 
     const wallBounce = el(rangeSetting({
       id: 'interaction.wallBounce',
@@ -1025,10 +1092,13 @@ export class DotpingApp {
       ballDamping,
       ballColor,
       ballRim,
+      ballShape,
+      ballShapeTurn,
       ballFxRays,
       ballFxRaysTurn,
+      ballFxRaysCurve,
       ballFxTrail,
-      ballFxStar,
+      ballFxAfterglow,
     ], ballPin);
     const dotsGroup = createSettingsGroup('Particles', 'particles', [
       particleCount,
@@ -1040,10 +1110,13 @@ export class DotpingApp {
       particleGlow,
       particleBrightness,
       particleVivid,
+      particleShape,
+      particleShapeTurn,
       particleFxRays,
       particleFxRaysTurn,
+      particleFxRaysCurve,
       particleFxTrail,
-      particleFxStar,
+      particleFxAfterglow,
     ], particlesPin);
     const interactionGroup = createSettingsGroup('Interaction', 'interaction', [
       wallBounce,
@@ -1477,16 +1550,22 @@ export class DotpingApp {
   private applyMotionFx() {
     const settings = this.settings;
     this.renderer?.setParticleFx({
+      shape: settings.particleShape,
+      shapeTurn: settings.particleShapeTurn,
       rays: settings.particleFxRays,
       raysTurn: settings.particleFxRaysTurn,
+      raysCurve: settings.particleFxRaysCurve,
       trail: settings.particleFxTrail,
-      star: settings.particleFxStar,
+      afterglow: settings.particleFxAfterglow,
     });
     this.renderer?.setBallFx({
+      shape: settings.ballShape,
+      shapeTurn: settings.ballShapeTurn,
       rays: settings.ballFxRays,
       raysTurn: settings.ballFxRaysTurn,
+      raysCurve: settings.ballFxRaysCurve,
       trail: settings.ballFxTrail,
-      star: settings.ballFxStar,
+      afterglow: settings.ballFxAfterglow,
     });
   }
 
@@ -2147,6 +2226,7 @@ export class DotpingApp {
       colliderCount: physics.colliderCount,
       rendererName: renderer.rendererName,
       particleRenderer: renderer.particleRenderer,
+      afterglow: renderer.afterglowState,
       devicePixelRatio: window.devicePixelRatio || 1,
       resolution: renderer.resolution,
       viewport: { width: window.innerWidth, height: window.innerHeight },
