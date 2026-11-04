@@ -53,6 +53,14 @@ export function presetExportName(value: string, userPresets: UserPresetSlots) {
   return preset?.name ?? 'Current';
 }
 
+// `dotping-user-presets` becomes `dotping-user-presets-2026-11-05.json`, in the
+// viewer's local date.
+export function presetExportFilename(base: string, date: Date) {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${base}-${date.getFullYear()}-${month}-${day}.json`;
+}
+
 export function presetSettingsForValue(
   value: string,
   userPresets: UserPresetSlots,

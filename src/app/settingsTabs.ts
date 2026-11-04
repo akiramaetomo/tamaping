@@ -8,7 +8,7 @@ export type SettingsCardId =
   | 'audio'
   | 'utility';
 
-export type SettingsTabId = 'all' | SettingsCardId;
+export type SettingsTabId = SettingsCardId;
 
 export const SETTINGS_TABS: ReadonlyArray<readonly [SettingsTabId, string]> = [
   ['my', 'My'],
@@ -19,7 +19,6 @@ export const SETTINGS_TABS: ReadonlyArray<readonly [SettingsTabId, string]> = [
   ['interaction', 'Interaction'],
   ['audio', 'Audio'],
   ['utility', 'Utility'],
-  ['all', 'All'],
 ];
 
 export const SETTINGS_TAB_STORAGE_KEY = 'dotping.settingsTab.v1';
@@ -28,25 +27,9 @@ export function isSettingsTabId(value: unknown): value is SettingsTabId {
   return SETTINGS_TABS.some(([id]) => id === value);
 }
 
-export function resolveInitialSettingsTab(saved: unknown, mobile: boolean): SettingsTabId {
-  if (isSettingsTabId(saved)) {
-    return saved;
-  }
-
-  return mobile ? 'preset' : 'all';
-}
-
-export function isCardVisibleInTab(
-  card: SettingsCardId,
-  tab: SettingsTabId,
-  myPanelItemCount: number,
-) {
-  if (tab === 'all') {
-    // An empty My Panel would only add a hint card to the familiar overview.
-    return card !== 'my' || myPanelItemCount > 0;
-  }
-
-  return card === tab;
+// A saved tab that no longer exists, such as the removed `all`, opens My.
+export function resolveInitialSettingsTab(saved: unknown): SettingsTabId {
+  return isSettingsTabId(saved) ? saved : 'my';
 }
 
 export function loadSettingsTab(): string | null {

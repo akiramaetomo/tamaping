@@ -16,11 +16,14 @@ import {
   afterglowLife,
   afterglowTint,
   followDirection,
+  hasSolidBody,
   rayAlpha,
   rayScale,
   rayShapeExponent,
+  scaledAlpha,
   shapeRotation,
   shapeTurns,
+  sparkleScale,
   speedFactor,
   trailAlpha,
   trailLength,
@@ -28,8 +31,16 @@ import {
 import { particleColor } from './particleColors';
 import type { BodyShape } from '../sim/settings';
 
-// `none` hides the body batch (and the leader halo); the effects still draw.
+// `sparkle` hides the body batch and draws an additive X per dot instead.
 export type ParticleShape = BodyShape;
+
+// Shape `Opacity` and the Tail `Opacity` / `Length` multipliers.
+export type ParticleLayerTuning = {
+  opacity: number;
+  shapeCurve: number;
+  trailOpacity: number;
+  trailLength: number;
+};
 
 // Large enough that Size 100 at Pixi resolution 2 stays sharp; mipmaps keep
 // small dots from shimmering.
@@ -74,6 +85,16 @@ export class SpriteParticleLayer {
     texture: this.rayTexture,
     dynamicProperties: EFFECT_PROPERTIES,
   });
+  // `Sparkle` bodies: the ray texture with its own curve, at a fixed size.
+  private sparkleCurve = -0.75;
+  private readonly sparkleTexture = rayTexture(rayShapeExponent(this.sparkleCurve));
+  private readonly sparkles = new ParticleContainer<Particle>({
+    texture: this.sparkleTexture,
+    dynamicProperties: EFFECT_PROPERTIES,
+  });
+  private opacity = 1;
+  private trailOpacity = 1;
+  private trailLengthScale = 1;
   private readonly dirX: number[] = [];
   private readonly dirY: number[] = [];
   // Afterglow, created on first use. Each dot stamps a band from its last
@@ -95,7 +116,7 @@ export class SpriteParticleLayer {
   private shape: ParticleShape = 'circle';
   private shapeTurn = false;
   private raysTurn = false;
-  private raysCurve = 1;
+  private raysCurve = -0.75;
 
   constructor(rimWidthPercent: number) {
     this.rimWidthPercent = rimWidthPercent;
@@ -109,7 +130,19 @@ export class SpriteParticleLayer {
     this.trails.visible = false;
     this.rays.visible = false;
     this.rays.blendMode = 'add';
-    this.view.addChild(this.halo, this.trails, this.body, this.rays);
+    this.sparkles.visible = false;
+    this.sparkles.blendMode = 'add';
+    this.view.addChild(this.halo, this.trails, this.body, this.sparkles, this.rays);
+  }
+
+  setTuning(tuning: ParticleLayerTuning) {
+    this.opacity = tuning.opacity;
+    this.trailOpacity = tuning.trailOpacity;
+    this.trailLengthScale = tuning.trailLength;
+    if (this.sparkleCurve !== tuning.shapeCurve) {
+      this.sparkleCurve = tuning.shapeCurve;
+      redrawRayTexture(this.sparkleTexture, rayShapeExponent(tuning.shapeCurve));
+    }
   }
 
   // `grow` is in world units; see eraseGrow.
@@ -152,7 +185,7 @@ export class SpriteParticleLayer {
         container.removeParticles();
       }
       layers.bands.visible = on && this.shape !== 'fish';
-      layers.heads.visible = on && this.shape === 'none';
+      layers.heads.visible = on && !hasSolidBody(this.shape);
       layers.discFootprints.visible = on && this.shape === 'circle';
       layers.starFootprints.visible = on && this.shape === 'star';
     }
@@ -189,6 +222,10 @@ export class SpriteParticleLayer {
     if (this.shape !== shape) {
       this.shape = shape;
       this.body.visible = shape === 'circle' || shape === 'star';
+      this.sparkles.visible = shape === 'sparkle';
+      if (!this.sparkles.visible) {
+        this.sparkles.removeParticles();
+      }
       if (shape === 'fish' && !this.fishMesh) {
         this.fishMesh = new FishMesh();
         this.view.addChildAt(this.fishMesh.view, this.view.getChildIndex(this.body) + 1);
@@ -225,7 +262,7 @@ export class SpriteParticleLayer {
   }
 
   private redrawBody() {
-    if (this.shape === 'none') {
+    if (this.shape === 'sparkle') {
       return;
     }
     if (this.shape === 'fish') {
@@ -246,7 +283,7 @@ export class SpriteParticleLayer {
       this.lastY.length = count;
     }
     const afterglow = this.afterglowLayers ? Object.values(this.afterglowLayers) : [];
-    for (const container of [this.trails, this.rays, ...afterglow]) {
+    for (const container of [this.trails, this.rays, this.sparkles, ...afterglow]) {
       if (container.particleChildren.length > count) {
         container.removeParticles(count);
       }
@@ -298,7 +335,16 @@ export class SpriteParticleLayer {
       : 0;
     if (fish) {
       const life = this.afterglow ? afterglowLife(speed, radius) / AFTERGLOW_MAX_SECONDS : 0;
-      fish.setFish(index, x, y, radius, particleColor(color, alpha), factor, turning ? heading : null, life);
+      fish.setFish(
+        index,
+        x,
+        y,
+        radius,
+        particleColor(color, scaledAlpha(alpha, this.opacity)),
+        factor,
+        turning ? heading : null,
+        life,
+      );
     } else {
       this.setBody(index, x, y, radius, color, alpha, shapeRotation(this.shape, turning, heading), speed);
     }
@@ -312,9 +358,10 @@ export class SpriteParticleLayer {
       trail.x = x;
       trail.y = y;
       trail.rotation = heading;
-      trail.scaleX = trailLength(factor, radius) / TRAIL_HEAD_X;
+      trail.scaleX = trailLength(factor, radius, this.trailLengthScale) / TRAIL_HEAD_X;
       trail.scaleY = radius / TRAIL_HEAD_RADIUS;
-      trail.color = particleColor(color, trailAlpha(factor) * alpha);
+      // The Tail has its own Opacity; it does not follow the shape's.
+      trail.color = particleColor(color, scaledAlpha(trailAlpha(factor) * alpha, this.trailOpacity));
     }
     if (this.rays.visible) {
       const ray = effectParticle(this.rays, index, this.rayTexture, 0.5);
@@ -338,9 +385,20 @@ export class SpriteParticleLayer {
     rotation: number,
     speed: number,
   ) {
-    const packed = particleColor(color, alpha);
+    const packed = particleColor(color, scaledAlpha(alpha, this.opacity));
     if (this.afterglow) {
       this.setAfterglowDot(index, x, y, radius, rotation, color, speed);
+    }
+    if (this.sparkles.visible) {
+      const sparkle = effectParticle(this.sparkles, index, this.sparkleTexture, 0.5);
+      const scale = sparkleScale(radius) / RAY_TEXTURE_RADIUS;
+      sparkle.x = x;
+      sparkle.y = y;
+      sparkle.rotation = rotation;
+      sparkle.scaleX = scale;
+      sparkle.scaleY = scale;
+      sparkle.color = packed;
+      return;
     }
     if (!this.body.visible) {
       return;
@@ -388,7 +446,7 @@ export class SpriteParticleLayer {
     // a round head here. With a body, the bands alone make the trail: a dot
     // moves less than its size per frame, and a disc at each joint, one
     // frame fresher than the bands, showed as beads.
-    const outline = this.shape !== 'none';
+    const outline = hasSolidBody(this.shape);
     const width = outline ? 1 : speedFactor(speed);
     const life = afterglowLife(speed, radius);
     const glow = particleColor(afterglowTint(color, life), life / AFTERGLOW_MAX_SECONDS);
@@ -444,8 +502,8 @@ export class SpriteParticleLayer {
 
   // The No.1 leader halo, drawn under every body.
   setHalo(visible: boolean, x = 0, y = 0, radius = 0, color = 0xffffff, alpha = 1) {
-    // Without bodies, a lone halo would read as a ghost dot.
-    this.halo.visible = visible && this.shape !== 'none';
+    // Every shape draws something at the dot, so the halo always marks it.
+    this.halo.visible = visible;
     if (!this.halo.visible) {
       return;
     }
@@ -467,6 +525,7 @@ export class SpriteParticleLayer {
     this.fillTexture.destroy(true);
     this.trailTexture.destroy(true);
     this.rayTexture.destroy(true);
+    this.sparkleTexture.destroy(true);
   }
 }
 

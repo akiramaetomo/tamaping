@@ -14,13 +14,14 @@ import {
   type TriggerTestMode,
 } from '../audio/triggerTiming';
 import { PixiRenderer } from '../render/pixiRenderer';
-import { RAY_CURVE_MAX, RAY_CURVE_MIN, shapeTurns } from '../render/motionFx';
+import { shapeTurns } from '../render/motionFx';
 import {
   DotpingPhysicsWorld,
   type ImpactEvent,
   type StepMetrics,
 } from '../sim/physicsWorld';
 import {
+  createAutosaveExport,
   createCurrentPresetExport,
   createUserPresetExport,
   deleteUserPreset,
@@ -53,6 +54,7 @@ import {
   type DotCombiMode,
   type DotpingSettings,
   type GravityMode,
+  FX_RANGES,
   type BodyShape,
   type ParticleGlowMode,
   type ParticlePalette,
@@ -64,8 +66,11 @@ import {
 } from './controlRegistry';
 import {
   attachPickButton,
+  createEffectToggleRow,
   createPinButton,
   createSettingsGroup,
+  createSettingsSection,
+  createSettingsSubgroup,
   createSettingsTabs,
   createTextSelect,
 } from './controls';
@@ -80,6 +85,13 @@ import {
   debugProfileFromLocation,
   type DebugProfile,
 } from './debugPanel';
+import {
+  FILE_BACKUP_INTERVAL_MS,
+  FileBackup,
+  browserFileBackupEnvironment,
+  fileBackupRowView,
+  type FileBackupAction,
+} from './fileBackup';
 import { FrameProfiler, measurePhase } from './frameProfiler';
 import {
   BENCH_PRESETS,
@@ -108,12 +120,22 @@ import {
   designViewportForPresetValue,
   initialFormationForPresetValue,
   presetEditOutcome,
+  presetExportFilename,
   presetExportName,
   presetFormationLabel,
   presetMessageText,
   presetSettingsEqual,
   presetSettingsForValue,
 } from './presetValues';
+import {
+  WORKING_STATE_SAVE_DELAY_MS,
+  WORKING_STATE_STABLE_MS,
+  WorkingStateSaver,
+  beginWorkingStateBoot,
+  finishWorkingStateBoot,
+  workingStateAllowed,
+  type WorkingState,
+} from './workingState';
 import {
   actionControl,
   rangeSetting,
@@ -165,7 +187,6 @@ import {
 } from './settingScales';
 import {
   SETTINGS_TABS,
-  isCardVisibleInTab,
   loadSettingsTab,
   resolveInitialSettingsTab,
   saveSettingsTab,
@@ -269,11 +290,15 @@ export class DotpingApp {
   private myPanelPinButton: HTMLButtonElement | null = null;
   private settingsCards = new Map<SettingsCardId, HTMLElement>();
   private settingsTabs: ReturnType<typeof createSettingsTabs<SettingsTabId>> | null = null;
-  private activeSettingsTab: SettingsTabId = 'all';
+  private activeSettingsTab: SettingsTabId = 'my';
   private triggerTestMode: TriggerTestMode = DEFAULT_TRIGGER_TEST_MODE;
   private stealFadeMs: StealFadeMs = DEFAULT_STEAL_FADE_MS;
   private attackTestMode: AttackTestMode = DEFAULT_ATTACK_TEST_MODE;
   private lookaheadMs: LookaheadMs = DEFAULT_LOOKAHEAD_MS;
+  private workingStateSaver: WorkingStateSaver | null = null;
+  private workingStateSaveTimer = 0;
+  private fileBackup: FileBackup | null = null;
+  private fileBackupTimer = 0;
   private syncUiFromSettings = () => {};
 
   constructor(
@@ -283,6 +308,12 @@ export class DotpingApp {
 
   async start() {
     this.settings = settingsFromUrl(DEFAULT_SETTINGS, window.location.search);
+    const restored = this.beginWorkingStateRestore();
+    if (restored) {
+      const { pinnedGroup: _pinnedGroup, ...settings } = restored.settings;
+      this.settings = { ...this.settings, ...settings };
+      this.designViewport = restored.designViewport;
+    }
     this.debugProfile = debugProfileFromLocation(window.location.search);
     this.audio.setTuning(this.settings);
     this.userPresets = loadUserPresets();
@@ -324,7 +355,19 @@ export class DotpingApp {
       : null;
     if (benchId) {
       this.applySelectedPreset(benchPresetValue(benchId));
+      // Presets now carry shapes and effects, so `?fx=` is applied again on
+      // top of the bench (the URL wins at startup). The debug line then
+      // reports the bench as modified, which it is.
+      if (new URLSearchParams(window.location.search).has('fx')) {
+        this.updateSettings(settingsFromUrl(this.settings, window.location.search), false, false);
+        this.syncUiFromSettings();
+      }
     }
+
+    if (restored) {
+      this.finishWorkingStateRestore(restored);
+    }
+    this.startWorkProtection();
   }
 
   dispose() {
@@ -332,7 +375,130 @@ export class DotpingApp {
       cancelAnimationFrame(this.frameHandle);
       this.frameHandle = 0;
     }
+    window.clearTimeout(this.workingStateSaveTimer);
+    window.clearInterval(this.fileBackupTimer);
     this.renderer?.dispose();
+  }
+
+  private beginWorkingStateRestore() {
+    if (!workingStateAllowed(window.location.search)) {
+      return null;
+    }
+    try {
+      return beginWorkingStateBoot(window.localStorage);
+    } catch {
+      return null;
+    }
+  }
+
+  private finishWorkingStateRestore(restored: WorkingState) {
+    this.setPinnedGroup(restored.settings.pinnedGroup ?? null, false);
+    this.lastAppliedPresetValue = restored.lastAppliedValue;
+    if (
+      restored.snapshot
+      && restored.presetValue !== 'custom'
+      && presetSettingsForValue(restored.presetValue, this.userPresets)
+    ) {
+      // Rebuilt in the app's own key order, which the Modified comparison needs.
+      const { pinnedGroup, ...snapshot } = restored.snapshot;
+      this.activePresetValue = restored.presetValue;
+      this.activePresetSnapshot = presetFromSettings({ ...this.settings, ...snapshot }, pinnedGroup ?? null);
+    }
+    this.syncUiFromSettings();
+    this.syncPresetSelectSelection();
+    const outcome = presetEditOutcome(
+      presetFromSettings(this.settings, this.activePinnedGroupId),
+      this.activePresetSnapshot,
+      this.activePresetValue,
+    );
+    this.setPresetStatus(
+      outcome === 'applied' ? 'Applied' : outcome === 'modified' ? 'Modified' : 'Restored',
+    );
+  }
+
+  // Keeps unsaved tuning in the browser and, if the viewer chose a file, on disk.
+  private startWorkProtection() {
+    const allowed = workingStateAllowed(window.location.search);
+    const environment = browserFileBackupEnvironment();
+    this.fileBackup = new FileBackup(
+      allowed ? environment : { ...environment, pickFile: null },
+      () => createAutosaveExport(
+        this.userPresets,
+        presetFromSettings(this.settings, this.activePinnedGroupId),
+        presetFormationLabel(this.activePresetValue, this.userPresets),
+        this.worldViewport(),
+      ),
+      (status, savedAt) => this.presetPanel?.setBackupRow(fileBackupRowView(status, savedAt)),
+    );
+    void this.fileBackup.start();
+    if (!allowed) {
+      return;
+    }
+
+    try {
+      this.workingStateSaver = new WorkingStateSaver(window.localStorage, () => this.readWorkingState());
+    } catch {
+      this.workingStateSaver = null;
+    }
+    const finishBoot = () => {
+      try {
+        finishWorkingStateBoot(window.localStorage);
+      } catch {
+        // Storage can be unavailable in private windows; nothing was restored.
+      }
+    };
+    window.setTimeout(finishBoot, WORKING_STATE_STABLE_MS);
+    this.fileBackupTimer = window.setInterval(() => {
+      void this.fileBackup?.tick();
+    }, FILE_BACKUP_INTERVAL_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        this.flushWorkingState();
+        void this.fileBackup?.tick();
+      }
+    });
+    window.addEventListener('pagehide', () => {
+      this.flushWorkingState();
+      finishBoot();
+    });
+  }
+
+  private readWorkingState(): WorkingState {
+    return {
+      settings: presetFromSettings(this.settings, this.activePinnedGroupId),
+      presetValue: this.activePresetValue,
+      snapshot: this.activePresetSnapshot,
+      lastAppliedValue: this.lastAppliedPresetValue,
+      designViewport: this.designViewport,
+    };
+  }
+
+  private scheduleWorkingStateSave() {
+    if (!this.workingStateSaver || this.workingStateSaveTimer !== 0) {
+      return;
+    }
+    this.workingStateSaveTimer = window.setTimeout(() => this.flushWorkingState(), WORKING_STATE_SAVE_DELAY_MS);
+  }
+
+  private flushWorkingState() {
+    window.clearTimeout(this.workingStateSaveTimer);
+    this.workingStateSaveTimer = 0;
+    try {
+      this.workingStateSaver?.flush();
+    } catch {
+      // A full or blocked store must not interrupt play; the next change tries again.
+    }
+  }
+
+  private handleFileBackupAction(action: FileBackupAction) {
+    const backup = this.fileBackup;
+    if (action === 'choose') {
+      void backup?.choose();
+    } else if (action === 'resume') {
+      void backup?.resume();
+    } else {
+      void backup?.stop();
+    }
   }
 
   private readonly tick = (time: number) => {
@@ -462,10 +628,7 @@ export class DotpingApp {
     close.setAttribute('aria-label', 'Close settings');
     close.addEventListener('click', () => this.setSettingsPanelOpen(false));
 
-    this.activeSettingsTab = resolveInitialSettingsTab(
-      loadSettingsTab(),
-      window.matchMedia('(max-width: 760px)').matches,
-    );
+    this.activeSettingsTab = resolveInitialSettingsTab(loadSettingsTab());
     this.settingsTabs = createSettingsTabs<SettingsTabId>(SETTINGS_TABS, (tab) => {
       this.setSettingsTab(tab);
     });
@@ -625,7 +788,6 @@ export class DotpingApp {
       card: 'ball',
       label: 'Color',
       panelLabel: 'Ball color',
-      visual: true,
       options: [
         ['black', 'Black'],
         ['blue', 'Blue'],
@@ -644,7 +806,6 @@ export class DotpingApp {
       card: 'ball',
       label: 'Rim',
       panelLabel: 'Ball rim',
-      visual: true,
       read: () => this.settings.controlBallRimEnabled,
       onChange: (checked) => this.updateSettings({ controlBallRimEnabled: checked }, false),
     }));
@@ -706,7 +867,6 @@ export class DotpingApp {
       card: 'particles',
       label: 'Color',
       panelLabel: 'Particle color',
-      visual: true,
       options: [
         ['blue', 'Blue'],
         ['green', 'Green'],
@@ -726,7 +886,6 @@ export class DotpingApp {
       card: 'particles',
       label: 'Rim %',
       panelLabel: 'Particle rim %',
-      visual: true,
       min: PARTICLE_RIM_WIDTH_MIN,
       max: PARTICLE_RIM_WIDTH_MAX,
       step: 5,
@@ -739,7 +898,6 @@ export class DotpingApp {
       card: 'particles',
       label: 'Glow',
       panelLabel: 'Glow',
-      visual: true,
       options: [
         ['gold', 'Gold'],
         ['white', 'White'],
@@ -757,7 +915,6 @@ export class DotpingApp {
       card: 'particles',
       label: 'Bright',
       panelLabel: 'Bright',
-      visual: true,
       min: 0,
       max: AUDIO_UI_MAX,
       step: 1,
@@ -772,7 +929,6 @@ export class DotpingApp {
       card: 'particles',
       label: 'Vivid',
       panelLabel: 'Vivid',
-      visual: true,
       min: 0,
       max: PARTICLE_GLOW_VIVIDNESS_MAX,
       step: 0.05,
@@ -781,106 +937,165 @@ export class DotpingApp {
       onInput: (value) => this.updateSettings({ particleGlowVividness: value }, false),
     }));
 
-    // PoC shapes and motion effects: visual only, outside presets, so they
-    // never mark a preset as customized. One `Shape` per card; the effect
-    // toggles below it are drawn over that shape.
-    const shapeSelect = (card: 'ball' | 'particles', key: 'particleShape' | 'ballShape') =>
-      el(selectSetting<BodyShape>({
+    // Shapes and motion effects, stored in presets (round 10). One `Shape`
+    // per card; the effects below it are drawn over that shape. Each card's
+    // controls come from the same builder, keyed by the settings prefix.
+    type FxCard = 'ball' | 'particles';
+    type FxBoolKey = 'ShapeTurn' | 'FxRays' | 'FxRaysTurn' | 'FxTrail' | 'FxAfterglow';
+    type FxNumKey =
+      | 'ShapeCurve' | 'ShapeOpacity' | 'FxRaysCurve' | 'FxTrailOpacity' | 'FxTrailLength'
+      | 'FxAfterglowStrength' | 'FxAfterglowLength';
+    const fxPrefix = (card: FxCard) => (card === 'ball' ? 'ball' : 'particle');
+    const fxKey = <K extends FxBoolKey | FxNumKey | 'Shape'>(card: FxCard, key: K) =>
+      `${fxPrefix(card)}${key}` as `${'ball' | 'particle'}${K}`;
+    const fxName = (card: FxCard) => (card === 'ball' ? 'Ball' : 'Particle');
+    const shapeSelect = (card: FxCard) => {
+      const key = fxKey(card, 'Shape');
+      return el(selectSetting<BodyShape>({
         id: `${card}.shape`,
         card,
         label: 'Shape',
-        panelLabel: `${card === 'ball' ? 'Ball' : 'Particle'} shape (PoC)`,
-        visual: true,
+        panelLabel: `${fxName(card)} shape`,
         options: [
-          ['none', 'None'],
           ['circle', 'Circle'],
           ['star', 'Star'],
           ['fish', 'Fish'],
+          ['sparkle', 'Sparkle'],
         ],
         read: () => this.settings[key],
-        onChange: (value) => this.updateSettings({ [key]: value as BodyShape }, false, false),
+        onChange: (value) => this.updateSettings({ [key]: value as BodyShape }, false),
       }));
-    const ballShape = shapeSelect('ball', 'ballShape');
-    const particleShape = shapeSelect('particles', 'particleShape');
-    type FxKey =
-      | 'particleShapeTurn' | 'particleFxRays' | 'particleFxRaysTurn' | 'particleFxTrail'
-      | 'particleFxAfterglow'
-      | 'ballShapeTurn' | 'ballFxRays' | 'ballFxRaysTurn' | 'ballFxTrail' | 'ballFxAfterglow';
+    };
     const fxToggle = (
-      card: 'ball' | 'particles',
+      card: FxCard,
       name: string,
       label: string,
-      key: FxKey,
+      key: FxBoolKey,
       enabled?: () => boolean,
       panelName = label.toLowerCase(),
-    ) =>
-      el(toggleSetting({
+    ) => {
+      const settingKey = fxKey(card, key);
+      return el(toggleSetting({
         id: `${card}.fx${name}`,
         card,
         label,
-        panelLabel: `${card === 'ball' ? 'Ball' : 'Particle'} ${panelName} (PoC)`,
-        visual: true,
-        read: () => this.settings[key],
+        panelLabel: `${fxName(card)} ${panelName}`,
+        read: () => this.settings[settingKey],
         enabled,
-        onChange: (checked) => this.updateSettings({ [key]: checked }, false, false),
+        onChange: (checked) => this.updateSettings({ [settingKey]: checked }, false),
       }));
-    // Shape `Turn`: a fish or star turns its front to the direction of
-    // motion. Separate from the Rays `Turn`, so an upright X can sit on a
-    // turning fish.
-    const shapeTurn = (card: 'ball' | 'particles', key: 'particleShapeTurn' | 'ballShapeTurn') =>
-      fxToggle(card, 'ShapeTurn', 'Turn', key, () => shapeTurns(
-        card === 'ball' ? this.settings.ballShape : this.settings.particleShape,
-      ), 'shape turn');
-    const ballShapeTurn = shapeTurn('ball', 'ballShapeTurn');
-    const particleShapeTurn = shapeTurn('particles', 'particleShapeTurn');
-    // `Turn`: Rays follow the direction of motion instead of a fixed X.
-    const ballFxRays = fxToggle('ball', 'Rays', 'Rays', 'ballFxRays');
-    const ballFxRaysTurn = fxToggle(
-      'ball', 'RaysTurn', 'Turn', 'ballFxRaysTurn', () => this.settings.ballFxRays, 'rays turn',
-    );
-    // `Curve`: spike outline, 1 convex (brush tip), 0 straight, -1 concave.
-    const fxCurve = (
-      card: 'ball' | 'particles',
-      key: 'particleFxRaysCurve' | 'ballFxRaysCurve',
-      enabled: () => boolean,
-    ) =>
-      el(rangeSetting({
-        id: `${card}.fxRaysCurve`,
+    };
+    const fxRange = (
+      card: FxCard,
+      id: string,
+      label: string,
+      panelName: string,
+      key: FxNumKey,
+      range: readonly [number, number],
+      step: number,
+      format: (value: number) => string,
+      enabled?: () => boolean,
+    ) => {
+      const settingKey = fxKey(card, key);
+      return el(rangeSetting({
+        id: `${card}.${id}`,
         card,
-        label: 'Curve',
-        panelLabel: `${card === 'ball' ? 'Ball' : 'Particle'} rays curve (PoC)`,
-        visual: true,
-        min: RAY_CURVE_MIN,
-        max: RAY_CURVE_MAX,
-        step: 0.05,
-        slider: () => this.settings[key],
-        format: () => `${this.settings[key] > 0 ? '+' : ''}${this.settings[key].toFixed(2)}`,
+        label,
+        panelLabel: `${fxName(card)} ${panelName}`,
+        min: range[0],
+        max: range[1],
+        step,
+        slider: () => this.settings[settingKey],
+        format: () => format(this.settings[settingKey]),
         enabled,
-        onInput: (value) => this.updateSettings({ [key]: value }, false, false),
+        onInput: (value) => this.updateSettings({ [settingKey]: value }, false),
       }));
-    const ballFxRaysCurve = fxCurve('ball', 'ballFxRaysCurve', () => this.settings.ballFxRays);
-    const ballFxTrail = fxToggle('ball', 'Trail', 'Trail', 'ballFxTrail');
-    // `Afterglow`: the body leaves a glow along its real path that fades out
-    // (a feedback buffer). Not `Glow`, which is the Particles speed colour.
-    const ballFxAfterglow = fxToggle('ball', 'Afterglow', 'Afterglow', 'ballFxAfterglow');
-    const particleFxRays = fxToggle('particles', 'Rays', 'Rays', 'particleFxRays');
-    const particleFxRaysTurn = fxToggle(
-      'particles',
-      'RaysTurn',
-      'Turn',
-      'particleFxRaysTurn',
-      () => this.settings.particleFxRays,
-      'rays turn',
-    );
-    const particleFxRaysCurve = fxCurve(
-      'particles', 'particleFxRaysCurve', () => this.settings.particleFxRays,
-    );
-    // Shown as `Tail`: the dot streak reads as a tail, unlike the ball's path
-    // trail. The id and setting key stay `Trail` for saved My Panels and `?fx=`.
-    const particleFxTrail = fxToggle('particles', 'Trail', 'Tail', 'particleFxTrail');
-    const particleFxAfterglow = fxToggle(
-      'particles', 'Afterglow', 'Afterglow', 'particleFxAfterglow',
-    );
+    };
+    // `Curve`: spike outline, 1 convex (brush tip), 0 straight, -1 concave.
+    const formatCurve = (value: number) => `${value > 0 ? '+' : ''}${value.toFixed(2)}`;
+    const formatPercent = (value: number) => `${Math.round(value * 100)}%`;
+    const shapeOf = (card: FxCard) => this.settings[fxKey(card, 'Shape')];
+    const fxOn = (card: FxCard, key: FxBoolKey) => () => this.settings[fxKey(card, key)];
+    // The main rows (shape and effect toggles) and the `Details` groups that
+    // belong to them. An effect heading in `Details` is a live copy of its main
+    // toggle, kept in step by the control registry.
+    const shapeEffectControls = (card: FxCard) => {
+      const shape = shapeSelect(card);
+      // Shape `Turn`: a star, fish or sparkle turns its front to the
+      // direction of motion. Separate from the Rays `Turn`, so an upright X
+      // can sit on a turning fish.
+      const shapeTurn = fxToggle(card, 'ShapeTurn', 'Turn', 'ShapeTurn', () => shapeTurns(shapeOf(card)), 'shape turn');
+      // Stays visible, greyed out, for a Circle: it shows the option exists.
+      shapeTurn.classList.add('hud__row--keep-visible');
+      const shapeDetails = createSettingsSubgroup('Shape', [
+        shapeTurn,
+        // The Sparkle's own curve, so a Sparkle and Rays can differ.
+        fxRange(
+          card, 'shapeCurve', 'Curve', 'sparkle curve', 'ShapeCurve', FX_RANGES.curve, 0.05, formatCurve,
+          () => shapeOf(card) === 'sparkle',
+        ),
+        fxRange(
+          card,
+          'shapeOpacity',
+          'Opacity',
+          'shape opacity',
+          'ShapeOpacity',
+          card === 'ball' ? FX_RANGES.ballShapeOpacity : FX_RANGES.particleShapeOpacity,
+          0.05,
+          formatPercent,
+        ),
+      ], true);
+      const effectDetails = (name: string, rows: HTMLElement[]) => createSettingsSubgroup(
+        this.controls.createInstance(`${card}.fx${name}`, null).element,
+        rows,
+        true,
+      );
+
+      const rays = fxToggle(card, 'Rays', 'Rays', 'FxRays');
+      const raysDetails = effectDetails('Rays', [
+        // `Turn`: Rays follow the direction of motion instead of a fixed X.
+        fxToggle(card, 'RaysTurn', 'Turn', 'FxRaysTurn', fxOn(card, 'FxRays'), 'rays turn'),
+        fxRange(
+          card, 'fxRaysCurve', 'Curve', 'rays curve', 'FxRaysCurve', FX_RANGES.curve, 0.05, formatCurve,
+          fxOn(card, 'FxRays'),
+        ),
+      ]);
+      // Particles show it as `Tail`: the dot streak reads as a tail, unlike
+      // the ball's path trail. The id and setting key stay `Trail` for saved
+      // My Panels and `?fx=`.
+      const trail = fxToggle(card, 'Trail', card === 'ball' ? 'Trail' : 'Tail', 'FxTrail');
+      const trailDetails = effectDetails('Trail', [
+        fxRange(
+          card, 'fxTrailOpacity', 'Opacity', `${card === 'ball' ? 'trail' : 'tail'} opacity`,
+          'FxTrailOpacity', FX_RANGES.trailOpacity, 0.05, formatPercent, fxOn(card, 'FxTrail'),
+        ),
+        fxRange(
+          card, 'fxTrailLength', 'Length', `${card === 'ball' ? 'trail' : 'tail'} length`,
+          'FxTrailLength', FX_RANGES.trailLength, 0.05, formatPercent, fxOn(card, 'FxTrail'),
+        ),
+      ]);
+      // `Afterglow`: the body leaves a glow along its real path that fades
+      // out (a feedback buffer). Not `Glow`, which is the Particles speed
+      // colour.
+      const afterglow = fxToggle(card, 'Afterglow', 'Afterglow', 'FxAfterglow');
+      const afterglowDetails = effectDetails('Afterglow', [
+        fxRange(
+          card, 'fxAfterglowStrength', 'Strength', 'afterglow strength', 'FxAfterglowStrength',
+          FX_RANGES.afterglowStrength, 0.05, formatPercent, fxOn(card, 'FxAfterglow'),
+        ),
+        fxRange(
+          card, 'fxAfterglowLength', 'Length', 'afterglow length', 'FxAfterglowLength',
+          FX_RANGES.afterglowLength, 0.05, formatPercent, fxOn(card, 'FxAfterglow'),
+        ),
+      ]);
+
+      return {
+        main: [shape, createEffectToggleRow([rays, trail, afterglow])],
+        details: [shapeDetails, raysDetails, trailDetails, afterglowDetails],
+      };
+    };
+    const ballShapeEffects = shapeEffectControls('ball');
+    const particleShapeEffects = shapeEffectControls('particles');
 
     const wallBounce = el(rangeSetting({
       id: 'interaction.wallBounce',
@@ -1086,37 +1301,30 @@ export class DotpingApp {
       modeGravityStrength,
     ], modePin);
     const ballGroup = createSettingsGroup('Ball', 'ball', [
-      ballMode,
       ballSize,
-      ballWeight,
-      ballDamping,
       ballColor,
-      ballRim,
-      ballShape,
-      ballShapeTurn,
-      ballFxRays,
-      ballFxRaysTurn,
-      ballFxRaysCurve,
-      ballFxTrail,
-      ballFxAfterglow,
+      ...ballShapeEffects.main,
+      createSettingsSection('ball.details', 'Details', [
+        createSettingsSubgroup('Motion', [ballMode, ballWeight, ballDamping]),
+        createSettingsSubgroup('Color', [ballRim]),
+        ...ballShapeEffects.details,
+      ]),
     ], ballPin);
     const dotsGroup = createSettingsGroup('Particles', 'particles', [
       particleCount,
       particleSize,
-      particleWeight,
-      particleDamping,
       particleColor,
-      particleRimWidth,
-      particleGlow,
-      particleBrightness,
-      particleVivid,
-      particleShape,
-      particleShapeTurn,
-      particleFxRays,
-      particleFxRaysTurn,
-      particleFxRaysCurve,
-      particleFxTrail,
-      particleFxAfterglow,
+      ...particleShapeEffects.main,
+      createSettingsSection('particles.details', 'Details', [
+        createSettingsSubgroup('Motion', [particleWeight, particleDamping]),
+        createSettingsSubgroup('Color', [
+          particleRimWidth,
+          particleGlow,
+          particleBrightness,
+          particleVivid,
+        ]),
+        ...particleShapeEffects.details,
+      ]),
     ], particlesPin);
     const interactionGroup = createSettingsGroup('Interaction', 'interaction', [
       wallBounce,
@@ -1440,11 +1648,9 @@ export class DotpingApp {
 
   private applySettingsTab() {
     const tab = this.activeSettingsTab;
-    const count = this.myPanelState.items.length;
     for (const [card, element] of this.settingsCards) {
-      element.classList.toggle('is-tab-hidden', !isCardVisibleInTab(card, tab, count));
+      element.classList.toggle('is-tab-hidden', card !== tab);
     }
-    this.hudEl?.classList.toggle('hud--single', tab !== 'all');
     this.settingsTabs?.select(tab);
   }
 
@@ -1545,6 +1751,7 @@ export class DotpingApp {
     this.renderer?.setBallPalette(this.settings.controlBallPalette);
     this.renderer?.setBallRimEnabled(this.settings.controlBallRimEnabled);
     this.applyMotionFx();
+    this.scheduleWorkingStateSave();
   }
 
   private applyMotionFx() {
@@ -1552,20 +1759,32 @@ export class DotpingApp {
     this.renderer?.setParticleFx({
       shape: settings.particleShape,
       shapeTurn: settings.particleShapeTurn,
+      shapeCurve: settings.particleShapeCurve,
+      opacity: settings.particleShapeOpacity,
       rays: settings.particleFxRays,
       raysTurn: settings.particleFxRaysTurn,
       raysCurve: settings.particleFxRaysCurve,
       trail: settings.particleFxTrail,
+      trailOpacity: settings.particleFxTrailOpacity,
+      trailLength: settings.particleFxTrailLength,
       afterglow: settings.particleFxAfterglow,
+      afterglowStrength: settings.particleFxAfterglowStrength,
+      afterglowLength: settings.particleFxAfterglowLength,
     });
     this.renderer?.setBallFx({
       shape: settings.ballShape,
       shapeTurn: settings.ballShapeTurn,
+      shapeCurve: settings.ballShapeCurve,
+      opacity: settings.ballShapeOpacity,
       rays: settings.ballFxRays,
       raysTurn: settings.ballFxRaysTurn,
       raysCurve: settings.ballFxRaysCurve,
       trail: settings.ballFxTrail,
+      trailOpacity: settings.ballFxTrailOpacity,
+      trailLength: settings.ballFxTrailLength,
       afterglow: settings.ballFxAfterglow,
+      afterglowStrength: settings.ballFxAfterglowStrength,
+      afterglowLength: settings.ballFxAfterglowLength,
     });
   }
 
@@ -1727,6 +1946,7 @@ export class DotpingApp {
     if (markPresetCustom) {
       this.markPresetCustom();
     }
+    this.scheduleWorkingStateSave();
   }
 
   private applyPinnedSettingsPlacement() {
@@ -1827,6 +2047,9 @@ export class DotpingApp {
         getCurrentFormationLabel: () => presetFormationLabel(this.activePresetValue, this.userPresets),
         onFrontMenuChange: (visible) => {
           this.setFrontPresetBarVisible(visible);
+        },
+        onBackupAction: (action) => {
+          this.handleFileBackupAction(action);
         },
       },
       this.userPresets,
@@ -2032,7 +2255,7 @@ export class DotpingApp {
       presetFormationLabel(this.activePresetValue, this.userPresets),
       this.worldViewport(),
     );
-    this.downloadPresetJson(exportFile, 'dotping-current-preset.json');
+    this.downloadPresetJson(exportFile, presetExportFilename('dotping-current-preset', new Date()));
     this.setPresetStatus('Exported current');
   }
 
@@ -2044,7 +2267,7 @@ export class DotpingApp {
     }
 
     const exportFile = createUserPresetExport(this.userPresets);
-    this.downloadPresetJson(exportFile, 'dotping-user-presets.json');
+    this.downloadPresetJson(exportFile, presetExportFilename('dotping-user-presets', new Date()));
     this.setPresetStatus(`Exported ${savedCount}`);
   }
 
@@ -2129,6 +2352,7 @@ export class DotpingApp {
     this.activePresetValue = this.presetPanel.syncPresetSelectSelection(
       this.activePresetValue,
     );
+    this.scheduleWorkingStateSave();
     this.controls.syncId('preset.select');
     this.frontPresetBar?.sync(
       this.activePresetValue,

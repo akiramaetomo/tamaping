@@ -26,7 +26,6 @@ export type RangeSettingSpec = ControlSpecBase & {
   format: () => string;
   onInput: (value: number) => void;
   enabled?: () => boolean;
-  visual?: boolean;
   // Returns an optional cleanup for when a My Panel copy is removed.
   decorate?: (control: RangeControl) => (() => void) | void;
 };
@@ -35,7 +34,6 @@ export type SelectSettingSpec<T extends string | number> = ControlSpecBase & {
   options: Array<[T, string]>;
   read: () => T;
   onChange: (value: string) => void;
-  visual?: boolean;
   title?: string;
 };
 
@@ -43,7 +41,6 @@ export type ToggleSettingSpec = ControlSpecBase & {
   read: () => boolean;
   onChange: (checked: boolean) => void;
   enabled?: () => boolean;
-  visual?: boolean;
   // Layout class used only inside the source card, not in My Panel.
   primaryClassName?: string;
 };
@@ -63,9 +60,6 @@ export function rangeSetting(spec: RangeSettingSpec): ControlDefinition {
     create: (label, changed) => {
       const control = createRange(label ?? spec.label, spec.min, spec.max, spec.step, spec.slider());
       control.value.textContent = spec.format();
-      if (spec.visual) {
-        control.wrap.classList.add('hud__control--visual');
-      }
       control.input.addEventListener('input', () => {
         spec.onInput(Number(control.input.value));
         control.value.textContent = spec.format();
@@ -102,9 +96,6 @@ export function selectSetting<T extends string | number>(spec: SelectSettingSpec
     create: (label, changed) => {
       const control = createTextSelect<T>(label ?? spec.label, spec.options, spec.read());
       syncSelectValue(control.input, spec.read());
-      if (spec.visual) {
-        control.wrap.classList.add('hud__control--visual');
-      }
       if (spec.title) {
         control.input.title = spec.title;
       }
@@ -128,9 +119,6 @@ export function toggleSetting(spec: ToggleSettingSpec): ControlDefinition {
     panelLabel: spec.panelLabel,
     create: (label, changed) => {
       const control = createToggle(label ?? spec.label, spec.read());
-      if (spec.visual) {
-        control.wrap.classList.add('hud__toggle--visual');
-      }
       if (label === null && spec.primaryClassName) {
         control.wrap.classList.add(spec.primaryClassName);
       }

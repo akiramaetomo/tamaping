@@ -11,32 +11,23 @@ import {
 } from '../.test-build/app/myPanel.js';
 import {
   SETTINGS_TABS,
-  isCardVisibleInTab,
   resolveInitialSettingsTab,
 } from '../.test-build/app/settingsTabs.js';
 import { ControlRegistry } from '../.test-build/app/controlRegistry.js';
 
 const KNOWN = new Set(['mode.flash', 'mode.name', 'ball.size', 'audio.sound']);
 
-test('settings tab defaults to All on desktop and Preset on mobile', () => {
-  assert.equal(resolveInitialSettingsTab(null, false), 'all');
-  assert.equal(resolveInitialSettingsTab(null, true), 'preset');
-  assert.equal(resolveInitialSettingsTab('audio', true), 'audio');
-  assert.equal(resolveInitialSettingsTab('my', false), 'my');
-  assert.equal(resolveInitialSettingsTab('removed-tab', false), 'all');
+test('settings tab defaults to My and keeps a saved tab that still exists', () => {
+  assert.equal(resolveInitialSettingsTab(null), 'my');
+  assert.equal(resolveInitialSettingsTab('audio'), 'audio');
+  assert.equal(resolveInitialSettingsTab('preset'), 'preset');
+  assert.equal(resolveInitialSettingsTab('removed-tab'), 'my');
+  // A browser that last used the removed All tab.
+  assert.equal(resolveInitialSettingsTab('all'), 'my');
   assert.deepEqual(
     SETTINGS_TABS.map(([id]) => id),
-    ['my', 'preset', 'mode', 'ball', 'particles', 'interaction', 'audio', 'utility', 'all'],
+    ['my', 'preset', 'mode', 'ball', 'particles', 'interaction', 'audio', 'utility'],
   );
-});
-
-test('All shows every card except an empty My Panel; single tabs show one card', () => {
-  assert.equal(isCardVisibleInTab('mode', 'all', 0), true);
-  assert.equal(isCardVisibleInTab('my', 'all', 0), false);
-  assert.equal(isCardVisibleInTab('my', 'all', 2), true);
-  assert.equal(isCardVisibleInTab('my', 'my', 0), true);
-  assert.equal(isCardVisibleInTab('mode', 'ball', 0), false);
-  assert.equal(isCardVisibleInTab('ball', 'ball', 0), true);
 });
 
 test('My Panel state drops unknown ids, duplicates and items past the cap', () => {

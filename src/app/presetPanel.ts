@@ -5,6 +5,7 @@ import {
 } from '../sim/presets';
 import { benchPresetValue, type BenchPreset } from '../sim/benchPresets';
 import { createToggle } from './controls';
+import type { FileBackupAction, FileBackupRowView } from './fileBackup';
 import { effectivePresetMessageText, presetDisplayLabel } from './messageFormation';
 
 type PresetPanelCallbacks = {
@@ -16,6 +17,7 @@ type PresetPanelCallbacks = {
   onImportFile(input: HTMLInputElement): void;
   getCurrentFormationLabel(): string | null;
   onFrontMenuChange(visible: boolean): void;
+  onBackupAction(action: FileBackupAction): void;
 };
 
 export class PresetPanel {
@@ -33,6 +35,9 @@ export class PresetPanel {
   private readonly deleteButton: HTMLButtonElement;
   private readonly statusEl: HTMLSpanElement;
   private readonly frontMenuInput: HTMLInputElement;
+  private readonly backupTextEl: HTMLSpanElement;
+  private readonly backupButton: HTMLButtonElement;
+  private backupAction: FileBackupAction | null = null;
   private userPresets: Array<UserPreset | null>;
 
   constructor(
@@ -149,6 +154,21 @@ export class PresetPanel {
     this.statusEl.className = 'hud__preset-status';
     this.statusEl.textContent = 'Ready';
 
+    const backupRow = document.createElement('div');
+    backupRow.className = 'hud__preset-backup';
+    this.backupTextEl = document.createElement('span');
+    this.backupTextEl.className = 'hud__preset-backup-text';
+    this.backupButton = document.createElement('button');
+    this.backupButton.className = 'hud__button hud__preset-export hud__preset-backup-action';
+    this.backupButton.type = 'button';
+    this.backupButton.hidden = true;
+    this.backupButton.addEventListener('click', () => {
+      if (this.backupAction) {
+        callbacks.onBackupAction(this.backupAction);
+      }
+    });
+    backupRow.append(this.backupTextEl, this.backupButton);
+
     wrap.append(
       title,
       frontMenu.wrap,
@@ -164,6 +184,7 @@ export class PresetPanel {
       importButton,
       importInput,
       this.statusEl,
+      backupRow,
     );
 
     this.element = wrap;
@@ -245,6 +266,13 @@ export class PresetPanel {
 
   set frontMenuVisible(visible: boolean) {
     this.frontMenuInput.checked = visible;
+  }
+
+  setBackupRow(view: FileBackupRowView) {
+    this.backupTextEl.textContent = view.text;
+    this.backupButton.textContent = view.actionLabel;
+    this.backupButton.hidden = view.action === null;
+    this.backupAction = view.action;
   }
 
   setStatus(status: string) {

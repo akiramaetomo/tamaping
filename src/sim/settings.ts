@@ -31,9 +31,22 @@ export type DotCombiMode = 'off' | 'velocity';
 export type GravityMode = 'none' | 'gravity' | 'antigravity';
 export type ColliderLayout = 'split' | 'single';
 export type ParticleRenderer = 'sprite' | 'graphics';
-// Drawn body shape (PoC). Physics stays circular; `none` draws no body, so
-// only the effects show. `fish` is a head disc with a fixed tail.
-export type BodyShape = 'none' | 'circle' | 'star' | 'fish';
+// Drawn body shape. Physics stays circular. `fish` is a fish seen from
+// above with a fixed tail; `sparkle` is the Rays X as a fixed body.
+export type BodyShape = 'circle' | 'star' | 'fish' | 'sparkle';
+export const BODY_SHAPES: readonly BodyShape[] = ['circle', 'star', 'fish', 'sparkle'];
+
+// [min, max] of the shape and effect multipliers and curves, shared by the
+// sliders and preset normalisation. Every multiplier's default is 1.
+export const FX_RANGES = {
+  curve: [-1, 1],
+  particleShapeOpacity: [0, 1.35],
+  ballShapeOpacity: [0, 1.5],
+  trailOpacity: [0, 3],
+  trailLength: [0.25, 3],
+  afterglowStrength: [0, 2],
+  afterglowLength: [0.25, 2],
+} as const satisfies Record<string, readonly [number, number]>;
 export type AudioWaveform = 'sine' | 'triangle' | 'sawtooth' | 'square';
 export type AudioTriggerSpreadMs = 0 | 16;
 
@@ -56,24 +69,40 @@ export type DotpingSettings = {
   particleLinearDamping: number;
   controlBallPalette: BallPalette;
   controlBallRimEnabled: boolean;
-  // Experimental shapes and motion effects (PoC); not stored in presets.
-  // One shape per card; the effects are drawn over it.
+  // Shapes and motion effects, stored in presets. One shape per card; the
+  // effects are drawn over it.
   particleShape: BodyShape;
   ballShape: BodyShape;
-  // The shape turns to the direction of motion (Fish and Star only).
+  // The shape turns to the direction of motion (Star, Fish and Sparkle).
   particleShapeTurn: boolean;
   ballShapeTurn: boolean;
+  // Sparkle spike curvature, -1 to 1, like the Rays curve.
+  particleShapeCurve: number;
+  ballShapeCurve: number;
+  // Multiplier on the body's own alphas; 1 is the original look.
+  particleShapeOpacity: number;
+  ballShapeOpacity: number;
   particleFxRays: boolean;
   particleFxRaysTurn: boolean;
   // Rays spike curvature, -1 to 1: 1 convex (brush tip), 0 straight, -1 concave.
   particleFxRaysCurve: number;
   particleFxTrail: boolean;
+  // Tail / Trail opacity and length multipliers; 1 is the original look.
+  particleFxTrailOpacity: number;
+  particleFxTrailLength: number;
   particleFxAfterglow: boolean;
+  // Afterglow strength (opacity) and length (time stretch) multipliers.
+  particleFxAfterglowStrength: number;
+  particleFxAfterglowLength: number;
   ballFxRays: boolean;
   ballFxRaysTurn: boolean;
   ballFxRaysCurve: number;
   ballFxTrail: boolean;
+  ballFxTrailOpacity: number;
+  ballFxTrailLength: number;
   ballFxAfterglow: boolean;
+  ballFxAfterglowStrength: number;
+  ballFxAfterglowLength: number;
   controlBallMode: ControlBallMode;
   controlBallRadius: number;
   controlBallMass: number;
@@ -119,18 +148,30 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   controlBallRimEnabled: true,
   particleShape: 'circle',
   ballShape: 'circle',
-  particleShapeTurn: false,
-  ballShapeTurn: false,
+  particleShapeTurn: true,
+  ballShapeTurn: true,
+  particleShapeCurve: -0.75,
+  ballShapeCurve: -0.75,
+  particleShapeOpacity: 1,
+  ballShapeOpacity: 1,
   particleFxRays: false,
   particleFxRaysTurn: false,
-  particleFxRaysCurve: 1,
+  particleFxRaysCurve: -0.75,
   particleFxTrail: false,
+  particleFxTrailOpacity: 1,
+  particleFxTrailLength: 1,
   particleFxAfterglow: false,
+  particleFxAfterglowStrength: 1,
+  particleFxAfterglowLength: 1,
   ballFxRays: false,
   ballFxRaysTurn: false,
-  ballFxRaysCurve: 1,
+  ballFxRaysCurve: -0.75,
   ballFxTrail: false,
+  ballFxTrailOpacity: 1,
+  ballFxTrailLength: 1,
   ballFxAfterglow: false,
+  ballFxAfterglowStrength: 1,
+  ballFxAfterglowLength: 1,
   controlBallMode: 'persistent',
   controlBallRadius: 52,
   controlBallMass: 100,

@@ -6,6 +6,7 @@ import {
   designViewportForPresetValue,
   initialFormationForPresetValue,
   presetEditOutcome,
+  presetExportFilename,
   presetExportName,
   presetFormationLabel,
   presetMessageText,
@@ -15,6 +16,17 @@ import {
 import { FACTORY_PRESETS, presetFromSettings } from '../.test-build/sim/presets.js';
 import { DEFAULT_SETTINGS } from '../.test-build/sim/settings.js';
 import { DEFAULT_DESIGN_VIEWPORT } from '../.test-build/sim/viewScale.js';
+
+test('export file names carry the local date with padded month and day', () => {
+  assert.equal(
+    presetExportFilename('dotping-user-presets', new Date(2026, 10, 5, 23, 59)),
+    'dotping-user-presets-2026-11-05.json',
+  );
+  assert.equal(
+    presetExportFilename('dotping-current-preset', new Date(2027, 0, 9, 0, 1)),
+    'dotping-current-preset-2027-01-09.json',
+  );
+});
 
 const factory = FACTORY_PRESETS[0];
 const userSettings = presetFromSettings({ ...DEFAULT_SETTINGS, particleCount: 240 }, 'my');

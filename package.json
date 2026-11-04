@@ -1,7 +1,7 @@
 {
   "name": "tamaping",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.2.6",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "build:pages": "tsc && vite build --base /tamaping/",
     "preview": "vite preview --host 127.0.0.1",
+    "preview:lan": "vite preview --host 0.0.0.0",
     "smoke": "npm run build && node tools/smoke-browser.mjs",
     "bench": "npm run build && node tools/bench-browser.mjs",
     "test": "node tools/prepare-node-test-build.mjs --clean && tsc -p tsconfig.test.json && node tools/prepare-node-test-build.mjs && node --test tests/*.test.mjs"
@@ -19,6 +20,6 @@
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "vite": "^8.0.16"
+    "vite": "^8.3.5"
   }
 }

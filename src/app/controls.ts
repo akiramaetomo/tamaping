@@ -135,6 +135,85 @@ export function createSettingsGroup(
   return group;
 }
 
+const SECTION_STORAGE_KEY = 'dotping.settingsSections.v1';
+
+function readSectionState(): Record<string, boolean> {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(SECTION_STORAGE_KEY) ?? '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSectionOpen(id: string, open: boolean) {
+  try {
+    const state = readSectionState();
+    state[id] = open;
+    window.localStorage.setItem(SECTION_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // A per-viewer convenience only; the section still works without storage.
+  }
+}
+
+// A foldable section inside a settings card. `id` keys the viewer's
+// open/closed state in local storage; without a stored state it is closed.
+export function createSettingsSection(id: string, titleText: string, controls: HTMLElement[]) {
+  const section = document.createElement('details');
+  section.className = 'hud__section';
+  section.dataset.section = id;
+  section.open = readSectionState()[id] === true;
+
+  const summary = document.createElement('summary');
+  summary.className = 'hud__section-title';
+  summary.textContent = titleText;
+
+  const body = document.createElement('div');
+  body.className = 'hud__section-body';
+  body.append(...controls);
+
+  section.append(summary, body);
+  section.addEventListener('toggle', () => writeSectionOpen(id, section.open));
+  return section;
+}
+
+// A headed group of detail rows inside a foldable section. `header` is a title
+// or a control such as an effect's on/off toggle. With `hideDisabled`, rows that
+// do not currently apply are hidden, keeping only what can be adjusted.
+export function createSettingsSubgroup(
+  header: string | HTMLElement,
+  rows: HTMLElement[],
+  hideDisabled = false,
+) {
+  const group = document.createElement('div');
+  group.className = 'hud__subgroup';
+  group.classList.toggle('hud__subgroup--hide-disabled', hideDisabled);
+
+  let headerEl: HTMLElement;
+  if (typeof header === 'string') {
+    headerEl = document.createElement('div');
+    headerEl.textContent = header;
+  } else {
+    headerEl = header;
+  }
+  headerEl.classList.add('hud__subgroup-title');
+
+  const body = document.createElement('div');
+  body.className = 'hud__subgroup-body';
+  body.append(...rows);
+
+  group.append(headerEl, body);
+  return group;
+}
+
+// One row of short on/off toggles, such as a card's effects.
+export function createEffectToggleRow(toggles: HTMLElement[]) {
+  const row = document.createElement('div');
+  row.className = 'hud__effect-toggles';
+  row.append(...toggles);
+  return row;
+}
+
 // Absolutely positioned in the host's left padding so the host layout does not change.
 export function attachPickButton(host: HTMLElement, label: string, onClick: () => void) {
   const button = document.createElement('button');

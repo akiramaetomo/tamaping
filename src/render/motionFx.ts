@@ -12,8 +12,12 @@ import type { BodyShape } from '../sim/settings';
 
 export type MotionFx = {
   shape: BodyShape;
-  // The shape turns to the direction of motion (Fish and Star only).
+  // The shape turns to the direction of motion (Star, Fish and Sparkle).
   shapeTurn: boolean;
+  // Sparkle spike curvature, -1 to 1; see rayShapeExponent.
+  shapeCurve: number;
+  // Multiplier on the body's own alphas (1 = the original look).
+  opacity: number;
   rays: boolean;
   // Rays turn with the direction of motion; off keeps a fixed upright X,
   // which the user found calmer.
@@ -21,18 +25,30 @@ export type MotionFx = {
   // Spike outline curvature, -1 to 1; see rayShapeExponent.
   raysCurve: number;
   trail: boolean;
+  // Tail / Trail opacity and length multipliers.
+  trailOpacity: number;
+  trailLength: number;
   // Afterglow buffer: the body leaves a fading glow along its path.
   afterglow: boolean;
+  // Afterglow opacity and time-stretch multipliers.
+  afterglowStrength: number;
+  afterglowLength: number;
 };
 
 export const NO_MOTION_FX: MotionFx = {
   shape: 'circle',
   shapeTurn: false,
+  shapeCurve: -0.75,
+  opacity: 1,
   rays: false,
   raysTurn: false,
-  raysCurve: 1,
+  raysCurve: -0.75,
   trail: false,
+  trailOpacity: 1,
+  trailLength: 1,
   afterglow: false,
+  afterglowStrength: 1,
+  afterglowLength: 1,
 };
 
 // The `Curve` setting maps to the spike's superellipse exponent 2^curve:
@@ -46,19 +62,32 @@ export function rayShapeExponent(curve: number) {
   return 2 ** Math.max(RAY_CURVE_MIN, Math.min(value, RAY_CURVE_MAX));
 }
 
-// Only shapes with a front can turn; a circle (or no body) looks the same
-// at every angle.
+// Only shapes with a front can turn; a circle looks the same at every
+// angle.
 export function shapeTurns(shape: BodyShape) {
-  return shape === 'fish' || shape === 'star';
+  return shape === 'fish' || shape === 'star' || shape === 'sparkle';
+}
+
+// `Sparkle` is light, not a solid body: like the old `None` it has no
+// outline to cut out of the afterglow (which becomes a stroke), and the
+// ball trail runs into its centre.
+export function hasSolidBody(shape: BodyShape) {
+  return shape !== 'sparkle';
 }
 
 // Body rotation for a heading (0 = +x). The fish's head faces +x; the star
-// points up, so a quarter turn puts one point in front.
+// points up, so a quarter turn puts one point in front. A turning sparkle
+// follows the heading like Rays `Turn`.
 export function shapeRotation(shape: BodyShape, turn: boolean, heading: number) {
   if (!turn || !shapeTurns(shape)) {
     return 0;
   }
   return shape === 'star' ? heading + Math.PI / 2 : heading;
+}
+
+// Sparkle: the Rays X at the rays' rest size, whatever the speed.
+export function sparkleScale(radius: number) {
+  return rayScale(0, radius);
 }
 
 export type SpeedCurve = { knee: number; full: number };
@@ -165,11 +194,20 @@ export function speedFactor(speed: number, curve: SpeedCurve = DOT_CURVE) {
 }
 
 // Streak length in world units, measured from the dot centre backwards.
-export function trailLength(factor: number, radius: number) {
+// `scale` (the Tail `Length`) stretches the growth; the rest length stays
+// under the body.
+export function trailLength(factor: number, radius: number, scale = 1) {
   if (!(radius > 0)) {
     return 0;
   }
-  return radius * (TRAIL_REST_RADII + (TRAIL_MAX_RADII - TRAIL_REST_RADII) * factor);
+  const growth = Math.max(Number.isFinite(scale) ? scale : 1, 0);
+  return radius * (TRAIL_REST_RADII + (TRAIL_MAX_RADII - TRAIL_REST_RADII) * factor * growth);
+}
+
+// An alpha times a multiplier, kept within 0..1.
+export function scaledAlpha(alpha: number, multiplier: number) {
+  const value = alpha * multiplier;
+  return Number.isFinite(value) ? Math.max(0, Math.min(value, 1)) : 0;
 }
 
 export function trailAlpha(factor: number) {

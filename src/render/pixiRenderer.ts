@@ -16,14 +16,18 @@ import {
   afterglowTint,
   SpeedHold,
   TrailHistory,
+  hasSolidBody,
   rayAlpha,
   rayScale,
   rayShapeExponent,
+  scaledAlpha,
   shapeRotation,
   shapeTurns,
+  sparkleScale,
   speedFactor,
   type MotionFx,
 } from './motionFx';
+import { FX_RANGES } from '../sim/settings';
 import { FishMotion, fishParts, type Polygon } from './fishBody';
 import type { WorldSnapshot } from '../sim/physicsWorld';
 import type {
@@ -36,7 +40,7 @@ import { paletteColor, speedColor, speedColorToward, vividGlowColor } from './pa
 import { SpriteParticleLayer } from './spriteParticleLayer';
 
 // The ball's body outline in one frame, for the afterglow: a circle, or
-// polygons (star, fish) in world coordinates, or nothing (`none`).
+// polygons (star, fish) in world coordinates, or nothing (`sparkle`).
 // `discRadius` is the disc stamped there, inside the outline; `bandRadius`
 // the half-width of the band stamped along a step.
 type BallFootprint = {
@@ -74,6 +78,10 @@ const BALL_STAR_INNER_RATIO = 0.5;
 // Ball trail segments: width and opacity taper toward the oldest point.
 // Per segment; about five resampled segments overlap near the head.
 const BALL_TRAIL_ALPHA = 0.24;
+// Path history kept for the longest Trail `Length`.
+const BALL_TRAIL_HISTORY_SECONDS = BALL_TRAIL_SECONDS * FX_RANGES.trailLength[1];
+// Ball `Sparkle` opacity at Opacity 100%, the same as a particle body.
+const BALL_SPARKLE_ALPHA = 0.72;
 const BALL_TRAIL_SPACING_RADII = 0.4;
 const BALL_TRAIL_MIN_WIDTH = 0.15;
 // Afterglow: screen pixels added to each cut-out's radius. Negative: the
@@ -99,13 +107,21 @@ export class PixiRenderer {
   private readonly control = new Graphics();
   private readonly table = new Graphics();
   private readonly ballTrail = new Graphics();
-  private readonly ballTrailHistory = new TrailHistory();
+  private readonly ballTrailHistory = new TrailHistory(BALL_TRAIL_HISTORY_SECONDS * 1000);
   private readonly ballSpeedHold = new SpeedHold();
   // Ball fish beat and turn curl; the ball draws its bent outline live.
   private readonly ballFish = new FishMotion();
   private ballFishAt = -1;
   private ballRays: Sprite | null = null;
+  private ballSparkle: Sprite | null = null;
+  // One afterglow buffer per card, so each card's Strength and Length (the
+  // buffer's opacity and time stretch) are its own. A buffer allocates its
+  // screen-sized textures only when first used.
   private afterglow: AfterglowBuffer | null = null;
+  private ballAfterglow: AfterglowBuffer | null = null;
+  // The ball's outline is also cut out of the particles' glow, so the dots'
+  // glow does not show through the translucent ball.
+  private readonly ballFootprintOverDots = new Graphics();
   // Ball afterglow: a disc at last frame's position and a band to here are
   // stamped, and the outline here is cut out.
   private readonly ballStamps = new Container();
@@ -203,39 +219,39 @@ export class PixiRenderer {
     this.ballRays.anchor.set(0.5);
     this.ballRays.blendMode = 'add';
     this.ballRays.visible = false;
+    this.ballSparkle = new Sprite(rayTexture(rayShapeExponent(this.ballFx.shapeCurve)));
+    this.ballSparkle.anchor.set(0.5);
+    this.ballSparkle.blendMode = 'add';
+    this.ballSparkle.visible = false;
     this.afterglow = new AfterglowBuffer(this.app.renderer);
+    this.ballAfterglow = new AfterglowBuffer(this.app.renderer);
     this.ballDisc.anchor.set(0.5);
     this.ballStamps.addChild(this.ballDisc);
-    this.afterglow.stamps.addChild(this.ballStamps);
-    this.afterglow.erasers.addChild(this.ballFootprint);
+    this.ballAfterglow.stamps.addChild(this.ballStamps);
+    this.ballAfterglow.erasers.addChild(this.ballFootprint);
+    this.afterglow.erasers.addChild(this.ballFootprintOverDots);
     if (this.particleRenderer === 'sprite') {
       this.spriteParticles = new SpriteParticleLayer(this.particleRimWidthPercent);
       this.afterglow.prestamps.addChild(this.spriteParticles.prestamps);
       this.afterglow.stamps.addChild(this.spriteParticles.stamps);
       this.afterglow.erasers.addChild(this.spriteParticles.erasers);
-      this.app.stage.addChild(
-        this.table,
-        this.afterglow.view,
-        this.spriteParticles.view,
-        this.ballTrail,
-        this.control,
-        this.ballRays,
-      );
-      this.setParticleFx(this.particleFx);
-    } else {
-      this.app.stage.addChild(
-        this.table,
-        this.afterglow.view,
-        this.particles,
-        this.ballTrail,
-        this.control,
-        this.ballRays,
-      );
     }
+    this.app.stage.addChild(
+      this.table,
+      this.ballAfterglow.view,
+      this.afterglow.view,
+      this.spriteParticles?.view ?? this.particles,
+      this.ballTrail,
+      this.control,
+      this.ballSparkle,
+      this.ballRays,
+    );
+    this.setParticleFx(this.particleFx);
+    this.setBallFx(this.ballFx);
   }
 
   render(snapshot: WorldSnapshot) {
-    const afterglow = this.beginAfterglow();
+    const afterglows = this.beginAfterglow();
     if (this.spriteParticles) {
       if (snapshot.width !== this.tableWidth || snapshot.height !== this.tableHeight) {
         this.tableWidth = snapshot.width;
@@ -248,32 +264,46 @@ export class PixiRenderer {
       this.drawParticles(snapshot);
     }
     this.drawControl(snapshot);
-    afterglow?.finish();
+    for (const afterglow of afterglows) {
+      afterglow.finish();
+    }
   }
 
-  // PoC afterglow buffer state for the debug overlay.
+  // Afterglow buffer state for the debug overlay: off, or the format and
+  // which cards' buffers run.
   get afterglowState() {
-    return this.afterglow?.view.visible ? this.afterglow.format : 'off';
+    const on = [
+      this.afterglow?.view.visible ? 'dots' : '',
+      this.ballAfterglow?.view.visible ? 'ball' : '',
+    ].filter(Boolean);
+    const format = this.afterglow?.format ?? this.ballAfterglow?.format;
+    return on.length > 0 && format ? `${format} (${on.join('+')})` : 'off';
   }
 
-  // Before the bodies are updated: sizes the buffer and draws the stamps
-  // that can only show last frame's pose. The rest is drawn in finish().
+  // Before the bodies are updated: sizes the buffers in use and draws the
+  // stamps that can only show last frame's pose. The rest is drawn in
+  // finish().
   private beginAfterglow() {
-    const afterglow = this.afterglow;
-    if (!afterglow) {
-      return null;
-    }
-    const particles = this.particleFx.afterglow && this.spriteParticles !== null;
-    if (!particles && !this.ballFx.afterglow) {
-      if (afterglow.view.visible) {
-        afterglow.stop();
-      }
-      return null;
-    }
+    const running: AfterglowBuffer[] = [];
     const viewScale = this.app.stage.scale.x;
-    this.spriteParticles?.setAfterglow(particles, AFTERGLOW_ERASE_GROW_PX / viewScale);
-    afterglow.begin(viewScale);
-    return afterglow;
+    const particles = this.particleFx.afterglow && this.spriteParticles !== null;
+    const start = (buffer: AfterglowBuffer | null, on: boolean) => {
+      if (!buffer) {
+        return;
+      }
+      if (on) {
+        buffer.begin(viewScale);
+        running.push(buffer);
+      } else if (buffer.view.visible) {
+        buffer.stop();
+      }
+    };
+    if (particles) {
+      this.spriteParticles?.setAfterglow(true, AFTERGLOW_ERASE_GROW_PX / viewScale);
+    }
+    start(this.afterglow, particles);
+    start(this.ballAfterglow, this.ballFx.afterglow);
+    return running;
   }
 
   resize() {
@@ -282,8 +312,10 @@ export class PixiRenderer {
 
   dispose() {
     this.afterglow?.destroy();
+    this.ballAfterglow?.destroy();
     this.spriteParticles?.destroy();
     this.ballRays?.texture.destroy(true);
+    this.ballSparkle?.texture.destroy(true);
     this.app.destroy(true);
   }
 
@@ -338,11 +370,22 @@ export class PixiRenderer {
     if (!fx.afterglow) {
       this.spriteParticles?.setAfterglow(false);
     }
+    this.afterglow?.setTuning(fx.afterglowStrength, fx.afterglowLength);
+    this.spriteParticles?.setTuning({
+      opacity: fx.opacity,
+      shapeCurve: fx.shapeCurve,
+      trailOpacity: fx.trailOpacity,
+      trailLength: fx.trailLength,
+    });
     this.spriteParticles?.setEffects(fx.rays, fx.trail, fx.raysTurn, fx.raysCurve);
     this.spriteParticles?.setShape(fx.shape, fx.shapeTurn);
   }
 
   setBallFx(fx: MotionFx) {
+    this.ballAfterglow?.setTuning(fx.afterglowStrength, fx.afterglowLength);
+    if (this.ballSparkle && fx.shapeCurve !== this.ballFx.shapeCurve) {
+      redrawRayTexture(this.ballSparkle.texture, rayShapeExponent(fx.shapeCurve));
+    }
     // The held heading and speed also turn the shape, set the fish beat and
     // the afterglow's life, so the hold runs while any of them needs it.
     if (!fx.rays && fx.shape !== 'fish' && !(fx.shapeTurn && shapeTurns(fx.shape)) && !fx.afterglow) {
@@ -410,7 +453,10 @@ export class PixiRenderer {
     color: number,
     isLeader: boolean,
   ) {
-    const rimAlpha = this.particleLeaderVisible && isLeader ? LEADER_RIM_ALPHA : PARTICLE_RIM_ALPHA;
+    const rimAlpha = scaledAlpha(
+      this.particleLeaderVisible && isLeader ? LEADER_RIM_ALPHA : PARTICLE_RIM_ALPHA,
+      this.particleFx.opacity,
+    );
     const rimWidth = radius * (this.particleRimWidthPercent / 100);
 
     if (this.particleRimWidthPercent >= 100) {
@@ -472,6 +518,9 @@ export class PixiRenderer {
     if (this.ballRays) {
       this.ballRays.visible = false;
     }
+    if (this.ballSparkle) {
+      this.ballSparkle.visible = false;
+    }
     if (!ball.visible) {
       this.ballTrailHistory.clear();
       this.ballTrail.clear();
@@ -479,25 +528,26 @@ export class PixiRenderer {
       return;
     }
 
-    const style = ballStyle(this.ballPalette);
+    const style = withOpacity(ballStyle(this.ballPalette), this.ballFx.opacity);
     if (this.ballFx.trail) {
       this.drawBallTrail(ball, style.fill);
     }
 
-    // `none` draws no body; the effects alone show where the ball is.
     const shape = this.ballFx.shape;
+    const solid = hasSolidBody(shape);
     const turning = this.ballFx.shapeTurn && shapeTurns(shape);
     // One held heading per frame, shared by the shape and the rays.
     const now = performance.now();
     // The afterglow uses the held speed: a frame without a pointer event
     // would otherwise stamp the long life of a still ball.
-    const strokes = this.ballFx.afterglow && shape === 'none';
+    const strokes = this.ballFx.afterglow && !solid;
     const motion = this.ballFx.rays || turning || shape === 'fish' || this.ballFx.afterglow
       ? this.ballSpeedHold.update(ball.speed, ball.vx, ball.vy, now)
       : null;
     const rotation = shapeRotation(shape, turning, motion?.heading ?? 0);
     // The afterglow follows the body outline, not the darker glow around it.
-    // Without a body, it is a stroke whose width follows speed.
+    // Without a solid body (Sparkle), it is a stroke whose width follows
+    // speed.
     const strokeRadius = ball.radius * (strokes ? speedFactor(motion?.speed ?? 0, BALL_CURVE) : 1);
     const footprint: BallFootprint = {
       x: ball.x,
@@ -507,7 +557,7 @@ export class PixiRenderer {
       discRadius: strokeRadius,
       bandRadius: strokeRadius,
       polygons: null,
-      outline: shape !== 'none',
+      outline: solid,
     };
     if (shape === 'star') {
       const outer = ball.radius * 1.3;
@@ -576,13 +626,19 @@ export class PixiRenderer {
           alpha: style.strokeAlpha,
         });
       }
+    } else if (shape === 'sparkle' && this.ballSparkle) {
+      // The Rays X at a fixed size, in the palette's highlight colour.
+      this.ballSparkle.visible = true;
+      this.ballSparkle.position.set(ball.x, ball.y);
+      this.ballSparkle.rotation = rotation;
+      this.ballSparkle.scale.set(sparkleScale(ball.radius) / RAY_TEXTURE_RADIUS);
+      this.ballSparkle.tint = style.highlight;
+      this.ballSparkle.alpha = scaledAlpha(BALL_SPARKLE_ALPHA, this.ballFx.opacity);
     }
-    if (shape !== 'none') {
-      this.control.circle(ball.x, ball.y, Math.max(ball.radius * 0.16, 4)).fill({
-        color: style.center,
-        alpha: style.centerAlpha,
-      });
-    }
+    this.control.circle(ball.x, ball.y, Math.max(ball.radius * 0.16, 4)).fill({
+      color: style.center,
+      alpha: style.centerAlpha,
+    });
 
     if (this.ballFx.afterglow) {
       const seconds = this.ballGlowAt < 0 ? 0 : Math.max(now - this.ballGlowAt, 0) / 1000;
@@ -621,9 +677,12 @@ export class PixiRenderer {
       band.visible = false;
     }
     this.ballFootprint.clear();
+    this.ballFootprintOverDots.clear();
     if (!footprint) {
       return;
     }
+    // Stamp ages are in the buffer's stretched time (afterglow Length).
+    frameSeconds /= this.ballFx.afterglowLength > 0 ? this.ballFx.afterglowLength : 1;
     const seconds = afterglowLife(speed, footprint.ballRadius);
     // Stamps a glow `age` seconds old already (see afterglowTint).
     const stamp = (sprite: Sprite, x: number, y: number, rotation: number, scale: number, age: number) =>
@@ -668,6 +727,7 @@ export class PixiRenderer {
     }
     const grow = AFTERGLOW_ERASE_GROW_PX / this.app.stage.scale.x;
     drawFootprint(this.ballFootprint, footprint, grow).fill({ color: 0xffffff, alpha: 1 });
+    drawFootprint(this.ballFootprintOverDots, footprint, grow).fill({ color: 0xffffff, alpha: 1 });
   }
 
   private ballBand(index: number) {
@@ -694,8 +754,10 @@ export class PixiRenderer {
     history.push(ball.x, ball.y, now);
     this.ballTrail.clear();
     const count = history.length;
-    const maxLength = ball.radius * BALL_TRAIL_MAX_RADII;
-    const maxAgeMs = BALL_TRAIL_SECONDS * 1000;
+    // Trail `Length` stretches both the drawn path and how long it lasts.
+    const lengthScale = this.ballFx.trailLength > 0 ? this.ballFx.trailLength : 1;
+    const maxLength = ball.radius * BALL_TRAIL_MAX_RADII * lengthScale;
+    const maxAgeMs = BALL_TRAIL_SECONDS * 1000 * lengthScale;
     const spacing = ball.radius * BALL_TRAIL_SPACING_RADII;
     let travelled = 0;
     let pending = 0;
@@ -703,6 +765,10 @@ export class PixiRenderer {
 
     for (let index = 1; index < count && travelled < maxLength; index += 1) {
       const to = history.at(index);
+      // History is kept for the longest Length; older points are gone.
+      if (now - to.time > maxAgeMs) {
+        break;
+      }
       const step = Math.hypot(to.x - history.at(index - 1).x, to.y - history.at(index - 1).y);
       travelled += step;
       pending += step;
@@ -717,8 +783,8 @@ export class PixiRenderer {
       from = to;
       // Segments inside the ball would show through the star shape and the
       // translucent fill as a disc; the visible tail starts at the edge.
-      // Without a body, the tail runs into the centre.
-      if (this.ballFx.shape !== 'none' && Math.hypot(to.x - ball.x, to.y - ball.y) < ball.radius) {
+      // Without a solid body (Sparkle), the tail runs into the centre.
+      if (hasSolidBody(this.ballFx.shape) && Math.hypot(to.x - ball.x, to.y - ball.y) < ball.radius) {
         continue;
       }
       const along = Math.min(travelled / maxLength, 1);
@@ -727,7 +793,7 @@ export class PixiRenderer {
       this.ballTrail.moveTo(segmentFrom.x, segmentFrom.y).lineTo(to.x, to.y).stroke({
         color,
         width,
-        alpha: BALL_TRAIL_ALPHA * (1 - along) * Math.sqrt(fresh),
+        alpha: scaledAlpha(BALL_TRAIL_ALPHA * (1 - along) * Math.sqrt(fresh), this.ballFx.trailOpacity),
         cap: 'round',
       });
     }
@@ -877,6 +943,22 @@ function ballStyle(palette: BallPalette): BallStyle {
         centerAlpha: 0.78,
       };
   }
+}
+
+// Shape `Opacity`: the body's own alphas times the multiplier, up to 1.
+// The rim stroke keeps its alpha.
+function withOpacity(style: BallStyle, opacity: number): BallStyle {
+  if (opacity === 1) {
+    return style;
+  }
+  return {
+    ...style,
+    glowAlpha: scaledAlpha(style.glowAlpha, opacity),
+    fillAlpha: scaledAlpha(style.fillAlpha, opacity),
+    highlightAlpha: scaledAlpha(style.highlightAlpha, opacity),
+    shadeAlpha: scaledAlpha(style.shadeAlpha, opacity),
+    centerAlpha: scaledAlpha(style.centerAlpha, opacity),
+  };
 }
 
 function placeStamp(

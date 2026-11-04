@@ -21,6 +21,9 @@ import {
   rayAlpha,
   rayScale,
   rayShapeExponent,
+  hasSolidBody,
+  scaledAlpha,
+  sparkleScale,
   scaleColor,
   shapeRotation,
   shapeTurns,
@@ -86,7 +89,9 @@ test('rays curve maps convex, straight and concave to superellipse exponents', (
   assert.equal(rayShapeExponent(3), 2);
   assert.equal(rayShapeExponent(-3), 0.5);
   assert.equal(rayShapeExponent(Number.NaN), 2);
-  assert.equal(rayShapeExponent(NO_MOTION_FX.raysCurve), 2);
+  // The default curve (round 10) is concave, -0.75.
+  assert.equal(rayShapeExponent(NO_MOTION_FX.raysCurve), 2 ** -0.75);
+  assert.equal(NO_MOTION_FX.shapeCurve, -0.75);
 });
 
 test('shape turn only rotates shapes with a front', () => {
@@ -94,7 +99,8 @@ test('shape turn only rotates shapes with a front', () => {
   assert.equal(shapeTurns('fish'), true);
   assert.equal(shapeTurns('star'), true);
   assert.equal(shapeTurns('circle'), false);
-  assert.equal(shapeTurns('none'), false);
+  assert.equal(shapeTurns('sparkle'), true);
+  assert.equal(shapeRotation('sparkle', true, 0.7), 0.7);
   assert.equal(shapeRotation('fish', true, 1.2), 1.2);
   // The star points up, so a quarter turn puts a point along the heading.
   assert.equal(shapeRotation('star', true, 0), Math.PI / 2);
@@ -214,4 +220,29 @@ test('an afterglow stamped as already aged carries that much less life and light
   const fresh = stored(0);
   const aged = stored(0.1);
   assert.ok(Math.abs(aged / fresh - Math.exp(-0.1 / AFTERGLOW_FADE_SECONDS)) < 0.02);
+});
+
+test('sparkle is a fixed X at the rays rest size, with no solid body', () => {
+  assert.equal(sparkleScale(8), rayScale(0, 8));
+  assert.equal(hasSolidBody('sparkle'), false);
+  for (const shape of ['circle', 'star', 'fish']) {
+    assert.equal(hasSolidBody(shape), true, shape);
+  }
+});
+
+test('tail length scales only the growth beyond the rest length', () => {
+  assert.equal(trailLength(0, 8, 3), trailLength(0, 8));
+  const base = trailLength(1, 8) - 8;
+  assert.ok(Math.abs(trailLength(1, 8, 2) - 8 - base * 2) < 1e-9);
+  assert.ok(Math.abs(trailLength(1, 8, 0.25) - 8 - base * 0.25) < 1e-9);
+  assert.equal(trailLength(0.5, 8, Number.NaN), trailLength(0.5, 8));
+  assert.equal(TRAIL_MAX_RADII * 8, trailLength(1, 8, 1));
+});
+
+test('scaled alpha multiplies and stays within 0..1', () => {
+  assert.equal(scaledAlpha(0.72, 1), 0.72);
+  assert.ok(Math.abs(scaledAlpha(0.72, 0.5) - 0.36) < 1e-12);
+  assert.equal(scaledAlpha(0.72, 3), 1);
+  assert.equal(scaledAlpha(0.5, -1), 0);
+  assert.equal(scaledAlpha(0.5, Number.NaN), 0);
 });

@@ -126,6 +126,8 @@ const LAYOUT_PROBE = `(() => {
   };
 })()`;
 
+const PANEL_MAX_HEIGHT = `parseFloat(getComputedStyle(document.getElementById('settings-panel')).maxHeight)`;
+
 function overlaps(a, b) {
   return Boolean(a && b && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom);
 }
@@ -206,6 +208,8 @@ async function runDesktop(page, url) {
   check('desktop: Settings starts closed', (await page.evaluate(openState)) === false);
   await click(page, '.settings-button');
   check('desktop: gear opens Settings', (await page.evaluate(openState)) === true);
+  const desktopLimit = await page.evaluate(PANEL_MAX_HEIGHT);
+  check('desktop: Settings may use 40% of the screen height', desktopLimit === DESKTOP.height * 0.4, `${desktopLimit}px`);
   await click(page, '.hud__close');
   check('desktop: close button closes Settings', (await page.evaluate(openState)) === false);
 
@@ -254,6 +258,362 @@ async function runPhone(page, url) {
     panel ? `left ${Math.round(panel.left)}, right ${Math.round(panel.right)}` : 'missing');
   const scroll = await page.evaluate('document.documentElement.scrollWidth');
   check('phone 360px: no horizontal scroll with Settings open', scroll <= PHONE.width, `scrollWidth ${scroll}`);
+  const phoneLimit = await page.evaluate(PANEL_MAX_HEIGHT);
+  check('phone 360px: Settings may use half the screen height', phoneLimit === PHONE.height / 2, `${phoneLimit}px`);
+}
+
+// Evaluates to the state of the Ball card's main rows and Details groups.
+const BALL_CARD_PROBE = `(() => {
+  const card = document.querySelector('.hud__group--ball');
+  const section = card.querySelector('[data-section="ball.details"]');
+  const visible = (element) => element.getClientRects().length > 0;
+  const groups = [...section.querySelectorAll('.hud__subgroup')];
+  const rows = (group) => [...group.querySelector('.hud__subgroup-body').children]
+    .filter(visible).map((row) => row.querySelector('label, span')?.textContent ?? row.textContent);
+  const effectRow = card.querySelector(':scope > .hud__effect-toggles');
+  const tops = [...effectRow.children].map((toggle) => Math.round(toggle.getBoundingClientRect().top));
+  return {
+    open: section.open,
+    mainLabels: [...card.children].filter((child) => child.classList.contains('hud__control'))
+      .map((child) => child.querySelector('label, span')?.textContent),
+    effectLabels: [...effectRow.children].map((toggle) => toggle.textContent),
+    effectRowOneLine: new Set(tops).size === 1,
+    headings: groups.map((group) => group.querySelector('.hud__subgroup-title').textContent),
+    shapeRows: rows(groups[2]),
+    raysRows: rows(groups[3]),
+    mainRaysChecked: effectRow.children[0].querySelector('input').checked,
+    headingRaysChecked: groups[3].querySelector('.hud__subgroup-title input').checked,
+  };
+})()`;
+
+const BALL_FX_TOGGLE = {
+  main: `document.querySelector('.hud__group--ball > .hud__effect-toggles input')`,
+  heading: `document.querySelectorAll('[data-section="ball.details"] .hud__subgroup')[3].querySelector('.hud__subgroup-title input')`,
+};
+
+async function runSettingsCards(page, url) {
+  await loadApp(page, url, DESKTOP);
+  await click(page, '.settings-button');
+
+  const tabs = await page.evaluate(`(() => {
+    const panel = document.getElementById('settings-panel');
+    return {
+      ids: [...panel.querySelectorAll('.hud__tab')].map((tab) => tab.dataset.tab),
+      selected: panel.querySelector('.hud__tab[aria-selected="true"]')?.dataset.tab,
+      visibleCards: [...panel.querySelectorAll(':scope > .hud__group, :scope > .hud__preset')]
+        .filter((element) => element.getClientRects().length > 0).length,
+      sideScroll: panel.scrollWidth > panel.clientWidth,
+    };
+  })()`);
+  check('Settings tabs: no All tab', !tabs.ids.includes('all') && tabs.ids.length === 8, tabs.ids.join());
+  check('Settings tabs: a new browser opens My, one card, no sideways scroll',
+    tabs.selected === 'my' && tabs.visibleCards === 1 && !tabs.sideScroll, JSON.stringify(tabs));
+
+  await click(page, '.hud__tab[data-tab="ball"]');
+  let card = await page.evaluate(BALL_CARD_PROBE);
+  check('Ball card: Details starts closed', card.open === false);
+  check('Ball card: main rows are Size, Color, Shape',
+    card.mainLabels.join() === 'Size,Color,Shape', card.mainLabels.join());
+  check('Ball card: effect toggles share one row',
+    card.effectLabels.join() === 'Rays,Trail,Afterglow' && card.effectRowOneLine, card.effectLabels.join());
+
+  await page.evaluate(`document.querySelector('[data-section="ball.details"]').open = true`);
+  await sleep(100);
+  card = await page.evaluate(BALL_CARD_PROBE);
+  check('Ball card: Details headings follow the main order',
+    card.headings.join() === 'Motion,Color,Shape,Rays,Trail,Afterglow', card.headings.join());
+  check('Ball card: Circle shows Turn and Opacity', card.shapeRows.join() === 'Turn,Opacity', card.shapeRows.join());
+  const shapeTurn = await page.evaluate(`(() => {
+    const row = document.querySelectorAll('[data-section="ball.details"] .hud__subgroup')[2]
+      .querySelector('.hud__subgroup-body .hud__toggle');
+    return { checked: row.querySelector('input').checked, disabled: row.querySelector('input').disabled };
+  })()`);
+  check('Ball card: Circle Turn is on by default and greyed out',
+    shapeTurn.checked && shapeTurn.disabled, JSON.stringify(shapeTurn));
+  check('Ball card: an effect that is off hides its rows', card.raysRows.length === 0, card.raysRows.join());
+
+  await page.evaluate(`${BALL_FX_TOGGLE.main}.click()`);
+  card = await page.evaluate(BALL_CARD_PROBE);
+  check('Ball card: main toggle updates the Details heading and shows its rows',
+    card.headingRaysChecked === true && card.raysRows.join() === 'Turn,Curve', card.raysRows.join());
+
+  await page.evaluate(`${BALL_FX_TOGGLE.heading}.click()`);
+  card = await page.evaluate(BALL_CARD_PROBE);
+  check('Ball card: Details heading updates the main toggle and hides its rows',
+    card.mainRaysChecked === false && card.raysRows.length === 0);
+
+  await page.evaluate(`(() => {
+    const select = [...document.querySelectorAll('.hud__group--ball > .hud__control--select')]
+      .find((row) => row.textContent.startsWith('Shape')).querySelector('select');
+    select.value = 'sparkle';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  card = await page.evaluate(BALL_CARD_PROBE);
+  check('Ball card: Sparkle shows Turn, Curve and Opacity',
+    card.shapeRows.join() === 'Turn,Curve,Opacity', card.shapeRows.join());
+
+  // A picked row stays in My Panel, disabled, while its effect is off.
+  await page.evaluate(`${BALL_FX_TOGGLE.main}.click()`);
+  await page.evaluate(`document.querySelector('.hud__pick[aria-label="Add Ball rays turn to My Panel"]').click()`);
+  await page.evaluate(`${BALL_FX_TOGGLE.main}.click()`);
+  await click(page, '.hud__tab[data-tab="my"]');
+  const picked = await page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('.hud__my-items .hud__toggle')]
+      .find((item) => item.textContent.includes('Ball rays turn'));
+    return row ? { visible: row.getClientRects().length > 0, disabled: row.querySelector('input').disabled } : null;
+  })()`);
+  check('My Panel: a picked detail stays visible and disabled while its effect is off',
+    Boolean(picked?.visible && picked.disabled), JSON.stringify(picked));
+  await click(page, '.hud__tab[data-tab="ball"]');
+
+  await loadApp(page, url, DESKTOP);
+  await click(page, '.settings-button');
+  card = await page.evaluate(BALL_CARD_PROBE);
+  check('Ball card: Details open state survives a reload', card.open === true);
+
+  // A browser that last used the removed All tab opens My.
+  await page.evaluate(`localStorage.setItem('dotping.settingsTab.v1', 'all')`);
+  await loadApp(page, url, DESKTOP);
+  const reopened = await page.evaluate(`document.querySelector('.hud__tab[aria-selected="true"]')?.dataset.tab`);
+  check('Settings tabs: a saved All tab opens My', reopened === 'my', `${reopened}`);
+
+  await page.evaluate(`[
+    'dotping.settingsSections.v1',
+    'dotping.settingsTab.v1',
+    'dotping.myPanel.v1',
+  ].forEach((key) => localStorage.removeItem(key))`);
+}
+
+// Every value in a card's Details, as the rows show them. Effects are switched
+// on first, because a row is hidden while its effect is off.
+const DETAILS_READ = `(() => {
+  const values = {};
+  for (const card of ['ball', 'particles']) {
+    const inputs = document.querySelectorAll(
+      '.hud__group--' + card + ' > .hud__control select, .hud__group--' + card + ' > .hud__effect-toggles input, '
+        + '[data-section="' + card + '.details"] input, [data-section="' + card + '.details"] select',
+    );
+    inputs.forEach((input, index) => {
+      values[card + index] = input.type === 'checkbox' ? input.checked : input.value;
+    });
+  }
+  return values;
+})()`;
+
+// Sets every Details value away from its default: on/off rows flip, sliders move
+// to a quarter of their range, and selects take their last option.
+const DETAILS_CHANGE = `(() => {
+  const fire = (input) => {
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  for (const card of ['ball', 'particles']) {
+    const shape = [...document.querySelectorAll('.hud__group--' + card + ' > .hud__control--select')]
+      .find((row) => row.textContent.startsWith('Shape')).querySelector('select');
+    shape.value = 'sparkle';
+    fire(shape);
+    document.querySelectorAll('.hud__group--' + card + ' > .hud__effect-toggles input').forEach((input) => {
+      if (!input.checked) input.click();
+    });
+    document.querySelectorAll('[data-section="' + card + '.details"] .hud__subgroup-body input, '
+      + '[data-section="' + card + '.details"] .hud__subgroup-body select').forEach((input) => {
+      if (input.type === 'checkbox') {
+        input.click();
+      } else if (input.tagName === 'SELECT') {
+        input.selectedIndex = input.options.length - 1;
+        fire(input);
+      } else {
+        const min = Number(input.min);
+        input.value = String(min + (Number(input.max) - min) * 0.25);
+        fire(input);
+      }
+    });
+  }
+})()`;
+
+const selectPreset = (value) => `(() => {
+  const select = document.querySelector('.hud__preset-select');
+  select.value = ${JSON.stringify(value)};
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+})()`;
+
+const PRESET_STATUS = `document.querySelector('.hud__preset-status').textContent`;
+
+function sameValues(a, b) {
+  return Object.keys(a).length > 0 && JSON.stringify(a) === JSON.stringify(b);
+}
+
+async function runWorkProtection(page, url) {
+  await page.evaluate(`localStorage.clear()`);
+  await loadApp(page, url, DESKTOP);
+  await click(page, '.settings-button');
+
+  const defaults = await page.evaluate(DETAILS_READ);
+  await page.evaluate(DETAILS_CHANGE);
+  const tuned = await page.evaluate(DETAILS_READ);
+  check('Details: every card value can be set away from the start', !sameValues(defaults, tuned),
+    `${Object.keys(tuned).length} values`);
+
+  // Unsaved tuning survives a reload.
+  await sleep(800);
+  await loadApp(page, url, DESKTOP);
+  check('working state: unsaved Details survive a reload', sameValues(tuned, await page.evaluate(DETAILS_READ)));
+  check('working state: a restored custom tuning says Restored',
+    (await page.evaluate(PRESET_STATUS)) === 'Restored', await page.evaluate(PRESET_STATUS));
+
+  // Save, then apply another preset and come back.
+  await page.evaluate(`(() => {
+    const slot = document.querySelector('.hud__preset-save-select');
+    slot.value = '0';
+    slot.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('.hud__preset-save').click();
+  })()`);
+  await page.evaluate(selectPreset('factory:factory-1'));
+  await sleep(100);
+  check('Details: applying a factory preset leaves the saved values',
+    !sameValues(tuned, await page.evaluate(DETAILS_READ)));
+  await page.evaluate(selectPreset('user:0'));
+  await sleep(100);
+  check('Details: Save and apply restore every value', sameValues(tuned, await page.evaluate(DETAILS_READ)));
+
+  // Export file read back through Import, into a browser with no presets.
+  const exported = await page.evaluate(`localStorage.getItem('dotping.userPresets.v1')`);
+  await sleep(800);
+  await page.evaluate(`localStorage.clear()`);
+  await loadApp(page, url, DESKTOP);
+  const importFile = JSON.stringify({ kind: 'dotping-presets', presets: JSON.parse(exported).filter(Boolean) });
+  const imported = await page.evaluate(`(async () => {
+    const input = document.querySelector('.hud__preset input[type="file"]');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([${JSON.stringify(importFile)}], 'import.json', { type: 'application/json' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return document.querySelector('.hud__preset-status').textContent;
+  })()`);
+  check('Details: the exported file imports', imported === 'Imported 1', imported);
+  await page.evaluate(selectPreset('user:0'));
+  await sleep(100);
+  check('Details: Export and Import restore every value', sameValues(tuned, await page.evaluate(DETAILS_READ)));
+
+  // A restored preset keeps its Applied or Modified state.
+  await sleep(800);
+  await loadApp(page, url, DESKTOP);
+  check('working state: an unchanged preset comes back Applied',
+    (await page.evaluate(PRESET_STATUS)) === 'Applied'
+      && (await page.evaluate(`document.querySelector('.hud__preset-select').value`)) === 'user:0',
+    await page.evaluate(PRESET_STATUS));
+
+  // A start that died during restore: the next one skips it and keeps the state.
+  // The marker goes in on the new page, because closing a page normally clears it.
+  const stored = await page.evaluate(`localStorage.getItem('dotping.workingState.v1')`);
+  const { identifier } = await page.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `localStorage.setItem('dotping.workingState.booting.v1', '1');`,
+  });
+  await loadApp(page, url, DESKTOP);
+  await page.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+  const afterSkip = await page.evaluate(`({
+    value: document.querySelector('.hud__preset-select').value,
+    stored: localStorage.getItem('dotping.workingState.v1'),
+  })`);
+  check('working state: a marker left by a dead start skips the restore once',
+    afterSkip.value === 'custom' && afterSkip.stored === stored, afterSkip.value);
+
+  // Diagnostic URLs ignore and keep the stored state.
+  await loadApp(page, `${url}?fx=star`, DESKTOP);
+  const diagnostic = await page.evaluate(`({
+    value: document.querySelector('.hud__preset-select').value,
+    backup: document.querySelector('.hud__preset-backup-text').textContent,
+    stored: localStorage.getItem('dotping.workingState.v1'),
+  })`);
+  check('working state: ?fx= neither restores nor saves',
+    diagnostic.value === 'custom' && diagnostic.stored === stored, diagnostic.value);
+  check('Auto Backup: inactive on a diagnostic URL',
+    diagnostic.backup === 'Auto Backup: not available here', diagnostic.backup);
+
+  await page.evaluate(`localStorage.clear()`);
+}
+
+// The browser's file picker cannot run headless, so it hands out a real file
+// handle from the origin's private file system instead.
+const FAKE_PICKER = `window.showSaveFilePicker = async () => {
+  const root = await navigator.storage.getDirectory();
+  return root.getFileHandle('picked-backup.json', { create: true });
+};`;
+
+const READ_BACKUP_FILE = `(async () => {
+  const root = await navigator.storage.getDirectory();
+  const handle = await root.getFileHandle('picked-backup.json');
+  return (await handle.getFile()).text();
+})()`;
+
+async function runAutoBackup(page, url) {
+  const { identifier } = await page.send('Page.addScriptToEvaluateOnNewDocument', { source: FAKE_PICKER });
+  try {
+    for (const [label, viewport, panelWidth] of [['1280px', DESKTOP, DESKTOP.width], ['360px', PHONE, PHONE.width]]) {
+      await loadApp(page, url, viewport);
+      await click(page, '.settings-button');
+      await page.evaluate(`document.querySelector('.hud__tab[data-tab="preset"]').click()`);
+      await sleep(100);
+      const row = await page.evaluate(`(() => {
+        const r = document.querySelector('.hud__preset-backup').getBoundingClientRect();
+        const panel = document.getElementById('settings-panel');
+        return {
+          text: document.querySelector('.hud__preset-backup-text').textContent,
+          right: r.right,
+          sideScroll: panel.scrollWidth > panel.clientWidth,
+          pageScroll: document.documentElement.scrollWidth,
+        };
+      })()`);
+      check(`Auto Backup ${label}: starts off and fits the panel`,
+        row.text === 'Auto Backup: off' && row.right <= panelWidth + 1
+          && !row.sideScroll && row.pageScroll <= panelWidth,
+        JSON.stringify(row));
+    }
+
+    await loadApp(page, url, DESKTOP);
+    await click(page, '.settings-button');
+    await page.evaluate(`document.querySelector('.hud__tab[data-tab="preset"]').click()`);
+    await sleep(100);
+    await page.evaluate(`document.querySelector('.hud__preset-backup-action').scrollIntoView({ block: 'center' })`);
+    await click(page, '.hud__preset-backup-action');
+    await sleep(300);
+    const first = JSON.parse(await page.evaluate(READ_BACKUP_FILE));
+    check('Auto Backup: choosing a file writes it at once',
+      first.source === 'autosave' && Boolean(first.working?.settings), first.source);
+    check('Auto Backup: the row shows the write and offers Stop',
+      (await page.evaluate(`document.querySelector('.hud__preset-backup-text').textContent`)).startsWith('Auto Backup: saved')
+        && (await page.evaluate(`document.querySelector('.hud__preset-backup-action').textContent`)) === 'Stop');
+
+    await page.evaluate(`(() => {
+      const select = document.querySelector('.hud__preset-select');
+      select.value = 'factory:factory-2';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    })()`);
+    await sleep(300);
+    const second = JSON.parse(await page.evaluate(READ_BACKUP_FILE));
+    check('Auto Backup: hiding the page writes the changed tuning',
+      JSON.stringify(second.working.settings) !== JSON.stringify(first.working.settings));
+
+    await loadApp(page, url, DESKTOP);
+    await sleep(200);
+    check('Auto Backup: the chosen file is remembered after a reload',
+      (await page.evaluate(`document.querySelector('.hud__preset-backup-action').textContent`)) === 'Stop');
+
+    await click(page, '.settings-button');
+    await page.evaluate(`document.querySelector('.hud__tab[data-tab="preset"]').click()`);
+    await sleep(100);
+    await page.evaluate(`document.querySelector('.hud__preset-backup-action').scrollIntoView({ block: 'center' })`);
+    await click(page, '.hud__preset-backup-action');
+    await sleep(200);
+    check('Auto Backup: Stop turns it off',
+      (await page.evaluate(`document.querySelector('.hud__preset-backup-text').textContent`)) === 'Auto Backup: off');
+  } finally {
+    await page.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+    await page.evaluate(`localStorage.clear()`).catch(() => {});
+  }
 }
 
 async function main() {
@@ -294,6 +654,9 @@ async function main() {
 
     await runDesktop(page, url);
     await runPhone(page, url);
+    await runSettingsCards(page, url);
+    await runWorkProtection(page, url);
+    await runAutoBackup(page, url);
 
     await loadApp(page, `${url}?debug=1`, DESKTOP);
     const debugText = await page.evaluate(`document.querySelector('.debug')?.textContent ?? ''`);

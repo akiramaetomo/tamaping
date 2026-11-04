@@ -65,8 +65,11 @@ test('current preset export preserves tunable settings and excludes runtime togg
       particleRadius: 64,
       particleRimWidth: 75,
       audioTriggerSpreadMs: 16,
-      particleShape: 'none',
+      particleShape: 'sparkle',
       ballShape: 'fish',
+      particleShapeOpacity: 0.5,
+      ballFxTrailLength: 2,
+      particleFxAfterglowStrength: 1.5,
       particleShapeTurn: true,
       particleFxRays: true,
       particleFxRaysCurve: -0.5,
@@ -90,19 +93,19 @@ test('current preset export preserves tunable settings and excludes runtime togg
   assert.equal('particleFillEnabled' in exportFile.presets[0].settings, false);
   assert.equal('soundEnabled' in exportFile.presets[0].settings, false);
   assert.equal('debug' in exportFile.presets[0].settings, false);
-  // PoC shapes and motion effects stay outside presets.
-  for (const key of [
-    'particleShape',
-    'ballShape',
-    'particleShapeTurn',
-    'particleFxRays',
-    'particleFxRaysCurve',
-    'ballFxRaysCurve',
-    'particleFxAfterglow',
-    'ballFxAfterglow',
-  ]) {
-    assert.equal(key in exportFile.presets[0].settings, false, key);
-  }
+  // Shapes and motion effects are stored in presets (round 10).
+  const stored = exportFile.presets[0].settings;
+  assert.equal(stored.particleShape, 'sparkle');
+  assert.equal(stored.ballShape, 'fish');
+  assert.equal(stored.particleShapeTurn, true);
+  assert.equal(stored.particleFxRays, true);
+  assert.equal(stored.particleFxRaysCurve, -0.5);
+  assert.equal(stored.ballFxRaysCurve, 0);
+  assert.equal(stored.particleFxAfterglow && stored.ballFxAfterglow, true);
+  assert.equal(stored.particleShapeOpacity, 0.5);
+  assert.equal(stored.ballFxTrailLength, 2);
+  assert.equal(stored.particleFxAfterglowStrength, 1.5);
+  assert.equal(stored.ballShapeCurve, -0.75);
   assert.equal('colliderLayout' in exportFile.presets[0].settings, false);
 });
 
@@ -154,6 +157,57 @@ test('preset import normalizes legacy audio fields, invalid choices, and numeric
   assert.equal(preset.settings.audioParticleWaveform, 'square');
   assert.equal(preset.settings.controlBallPalette, 'pink');
   assert.equal(preset.settings.pinnedGroup, null);
+});
+
+test('preset import maps removed or unknown shapes to Circle and clamps effect values', () => {
+  const [preset] = parsePresetExport(JSON.stringify([
+    {
+      name: 'Old look',
+      settings: {
+        particleShape: 'none',
+        ballShape: 'heart',
+        particleShapeOpacity: 9,
+        ballShapeOpacity: -1,
+        particleShapeCurve: -3,
+        particleFxRaysCurve: 'bent',
+        particleFxTrailOpacity: 10,
+        particleFxTrailLength: 0,
+        ballFxAfterglowStrength: 5,
+        ballFxAfterglowLength: 0.01,
+        ballFxRays: 'yes',
+      },
+    },
+  ]));
+  const settings = preset.settings;
+  assert.equal(settings.particleShape, 'circle');
+  assert.equal(settings.ballShape, 'circle');
+  assert.equal(settings.particleShapeOpacity, 1.35);
+  assert.equal(settings.ballShapeOpacity, 0);
+  assert.equal(settings.particleShapeCurve, -1);
+  assert.equal(settings.particleFxRaysCurve, -0.75);
+  assert.equal(settings.particleFxTrailOpacity, 3);
+  assert.equal(settings.particleFxTrailLength, 0.25);
+  assert.equal(settings.ballFxAfterglowStrength, 2);
+  assert.equal(settings.ballFxAfterglowLength, 0.25);
+  assert.equal(settings.ballFxRays, false);
+});
+
+test('presets without shape and effect keys apply the defaults', () => {
+  const [preset] = parsePresetExport(JSON.stringify([
+    { name: 'Before round 10', settings: { particleCount: 42 } },
+  ]));
+  for (const key of [
+    'particleShape', 'ballShape', 'particleShapeTurn', 'particleShapeOpacity', 'ballShapeCurve',
+    'particleFxRays', 'ballFxRaysCurve', 'particleFxTrail', 'ballFxTrailOpacity',
+    'particleFxAfterglow', 'ballFxAfterglowLength',
+  ]) {
+    assert.equal(preset.settings[key], DEFAULT_SETTINGS[key], key);
+  }
+  // Factory presets carry the defaults too, so switching presets resets the look.
+  for (const factory of FACTORY_PRESETS) {
+    assert.equal(factory.settings.particleShape, 'circle', factory.name);
+    assert.equal(factory.settings.ballFxAfterglow, false, factory.name);
+  }
 });
 
 test('preset import accepts My Panel as a pinned group', () => {
@@ -233,7 +287,7 @@ test('presets keep a valid design viewport and drop invalid ones', () => {
     null,
     { width: 1299.6, height: 700.4 },
   );
-  assert.equal(exportFile.schemaVersion, 9);
+  assert.equal(exportFile.schemaVersion, 11);
   assert.deepEqual(exportFile.presets[0].designViewport, { width: 1300, height: 700 });
   assert.equal('designViewport' in exportFile.presets[0].settings, false);
 

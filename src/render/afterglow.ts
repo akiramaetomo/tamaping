@@ -226,6 +226,10 @@ export class AfterglowBuffer {
   private current = 0;
   private size = '';
   private lastAt = -1;
+  // `Length`: stretches the buffer's time, so the light fades and the life
+  // runs out this many times slower, and the glow reaches that much
+  // further behind a body. Per buffer, which is why each card has its own.
+  private timeStretch = 1;
 
   constructor(private readonly renderer: Renderer) {
     this.format = bufferFormat(renderer);
@@ -237,6 +241,12 @@ export class AfterglowBuffer {
     this.prestampPass.addChild(this.prestamps);
     this.stampPass.addChild(this.stamps);
     this.eraserPass.addChild(this.erasers);
+  }
+
+  // `Strength` (1 = AFTERGLOW_STRENGTH) and `Length` (1 = the base times).
+  setTuning(strength: number, length: number) {
+    this.view.alpha = Math.max(0, Math.min(AFTERGLOW_STRENGTH * strength, 1));
+    this.timeStretch = Number.isFinite(length) && length > 0 ? length : 1;
   }
 
   // Start of a frame with the effect on, before the bodies are updated:
@@ -283,7 +293,7 @@ export class AfterglowBuffer {
       this.lastAt = -1;
     }
     this.view.visible = true;
-    const seconds = this.lastAt < 0 ? 0 : Math.max(now - this.lastAt, 0) / 1000;
+    const seconds = (this.lastAt < 0 ? 0 : Math.max(now - this.lastAt, 0) / 1000) / this.timeStretch;
     this.lastAt = now;
     const from = this.current;
     this.current = 1 - from;

@@ -1,7 +1,10 @@
 import {
   DEFAULT_SETTINGS,
   type AudioWaveform,
+  BODY_SHAPES,
+  FX_RANGES,
   type BallPalette,
+  type BodyShape,
   type DotpingSettings,
   type ParticlePalette,
 } from './settings';
@@ -15,7 +18,8 @@ export type { FactoryPresetInitialFormation } from './factoryPresetData';
 
 export const FACTORY_PRESET_COUNT = 30;
 export const USER_PRESET_COUNT = 30;
-export const PRESET_EXPORT_SCHEMA_VERSION = 9;
+export const PRESET_EXPORT_SCHEMA_VERSION = 11;
+export const AUTOSAVE_WORKING_PRESET_NAME = 'Autosave working';
 
 const USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v1';
 const EXPORT_KIND = 'dotping-presets';
@@ -98,6 +102,32 @@ type PresetTuningSettings = Pick<
   | 'audioParticleFrequencySpread'
   | 'audioParticleDurationMs'
   | 'audioTriggerSpreadMs'
+  | 'particleShape'
+  | 'particleShapeTurn'
+  | 'particleShapeCurve'
+  | 'particleShapeOpacity'
+  | 'particleFxRays'
+  | 'particleFxRaysTurn'
+  | 'particleFxRaysCurve'
+  | 'particleFxTrail'
+  | 'particleFxTrailOpacity'
+  | 'particleFxTrailLength'
+  | 'particleFxAfterglow'
+  | 'particleFxAfterglowStrength'
+  | 'particleFxAfterglowLength'
+  | 'ballShape'
+  | 'ballShapeTurn'
+  | 'ballShapeCurve'
+  | 'ballShapeOpacity'
+  | 'ballFxRays'
+  | 'ballFxRaysTurn'
+  | 'ballFxRaysCurve'
+  | 'ballFxTrail'
+  | 'ballFxTrailOpacity'
+  | 'ballFxTrailLength'
+  | 'ballFxAfterglow'
+  | 'ballFxAfterglowStrength'
+  | 'ballFxAfterglowLength'
 >;
 
 type LegacySharedAudioPresetSettings = {
@@ -131,8 +161,10 @@ export type PresetExportFile = {
   kind: typeof EXPORT_KIND;
   schemaVersion: typeof PRESET_EXPORT_SCHEMA_VERSION;
   exportedAt: string;
-  source: 'current' | 'user-presets';
+  source: 'current' | 'user-presets' | 'autosave';
   presets: UserPreset[];
+  // Autosave only: the tuning in progress when the file was written.
+  working?: UserPreset;
 };
 
 const DEFAULT_PRESET = presetFromSettings(DEFAULT_SETTINGS);
@@ -208,6 +240,32 @@ export function presetFromSettings(
     audioParticleFrequencySpread: settings.audioParticleFrequencySpread,
     audioParticleDurationMs: settings.audioParticleDurationMs,
     audioTriggerSpreadMs: settings.audioTriggerSpreadMs,
+    particleShape: settings.particleShape,
+    particleShapeTurn: settings.particleShapeTurn,
+    particleShapeCurve: settings.particleShapeCurve,
+    particleShapeOpacity: settings.particleShapeOpacity,
+    particleFxRays: settings.particleFxRays,
+    particleFxRaysTurn: settings.particleFxRaysTurn,
+    particleFxRaysCurve: settings.particleFxRaysCurve,
+    particleFxTrail: settings.particleFxTrail,
+    particleFxTrailOpacity: settings.particleFxTrailOpacity,
+    particleFxTrailLength: settings.particleFxTrailLength,
+    particleFxAfterglow: settings.particleFxAfterglow,
+    particleFxAfterglowStrength: settings.particleFxAfterglowStrength,
+    particleFxAfterglowLength: settings.particleFxAfterglowLength,
+    ballShape: settings.ballShape,
+    ballShapeTurn: settings.ballShapeTurn,
+    ballShapeCurve: settings.ballShapeCurve,
+    ballShapeOpacity: settings.ballShapeOpacity,
+    ballFxRays: settings.ballFxRays,
+    ballFxRaysTurn: settings.ballFxRaysTurn,
+    ballFxRaysCurve: settings.ballFxRaysCurve,
+    ballFxTrail: settings.ballFxTrail,
+    ballFxTrailOpacity: settings.ballFxTrailOpacity,
+    ballFxTrailLength: settings.ballFxTrailLength,
+    ballFxAfterglow: settings.ballFxAfterglow,
+    ballFxAfterglowStrength: settings.ballFxAfterglowStrength,
+    ballFxAfterglowLength: settings.ballFxAfterglowLength,
   };
 }
 
@@ -301,7 +359,7 @@ export function parsePresetExport(jsonText: string): UserPreset[] {
   const sourcePresets = Array.isArray(parsed)
     ? parsed
     : isPresetExportLike(parsed)
-      ? parsed.presets
+      ? [...parsed.presets, ...(parsed.working ? [parsed.working] : [])]
       : [];
 
   return sourcePresets
@@ -335,6 +393,28 @@ export function createUserPresetExport(
     'user-presets',
     presets.filter((preset): preset is UserPreset => Boolean(preset)),
   );
+}
+
+export function createAutosaveExport(
+  presets: Array<UserPreset | null>,
+  settings: PresetSettings,
+  formationLabel?: string | null,
+  designViewport?: Viewport | null,
+): PresetExportFile {
+  const label = sanitizeFormationLabel(formationLabel);
+  const design = normalizeDesignViewport(designViewport);
+  return {
+    ...createPresetExport(
+      'autosave',
+      presets.filter((preset): preset is UserPreset => Boolean(preset)),
+    ),
+    working: {
+      name: AUTOSAVE_WORKING_PRESET_NAME,
+      ...(label ? { formationLabel: label } : {}),
+      ...(design ? { designViewport: design } : {}),
+      settings: normalizePresetSettings(settings),
+    },
+  };
 }
 
 function createPresetExport(
@@ -420,7 +500,7 @@ function normalizeUserPreset(value: unknown, index = 0): UserPreset | null {
   };
 }
 
-function normalizePresetSettings(value: unknown): PresetSettings {
+export function normalizePresetSettings(value: unknown): PresetSettings {
   const source = value && typeof value === 'object'
     ? (value as Partial<PresetSettings> & LegacySharedAudioPresetSettings)
     : {};
@@ -590,6 +670,66 @@ function normalizePresetSettings(value: unknown): PresetSettings {
       source.audioTriggerSpreadMs,
       base.audioTriggerSpreadMs,
     ),
+    // Shapes and effects (round 10). Missing keys take the defaults, so a
+    // preset saved before them always looks the same.
+    particleShape: normalizeShape(source.particleShape) ?? base.particleShape,
+    particleShapeTurn: booleanValue(source.particleShapeTurn, base.particleShapeTurn),
+    particleShapeCurve: rangeValue(source.particleShapeCurve, base.particleShapeCurve, FX_RANGES.curve),
+    particleShapeOpacity: rangeValue(source.particleShapeOpacity, base.particleShapeOpacity, FX_RANGES.particleShapeOpacity),
+    particleFxRays: booleanValue(source.particleFxRays, base.particleFxRays),
+    particleFxRaysTurn: booleanValue(source.particleFxRaysTurn, base.particleFxRaysTurn),
+    particleFxRaysCurve: rangeValue(source.particleFxRaysCurve, base.particleFxRaysCurve, FX_RANGES.curve),
+    particleFxTrail: booleanValue(source.particleFxTrail, base.particleFxTrail),
+    particleFxTrailOpacity: rangeValue(
+      source.particleFxTrailOpacity,
+      base.particleFxTrailOpacity,
+      FX_RANGES.trailOpacity,
+    ),
+    particleFxTrailLength: rangeValue(
+      source.particleFxTrailLength,
+      base.particleFxTrailLength,
+      FX_RANGES.trailLength,
+    ),
+    particleFxAfterglow: booleanValue(source.particleFxAfterglow, base.particleFxAfterglow),
+    particleFxAfterglowStrength: rangeValue(
+      source.particleFxAfterglowStrength,
+      base.particleFxAfterglowStrength,
+      FX_RANGES.afterglowStrength,
+    ),
+    particleFxAfterglowLength: rangeValue(
+      source.particleFxAfterglowLength,
+      base.particleFxAfterglowLength,
+      FX_RANGES.afterglowLength,
+    ),
+    ballShape: normalizeShape(source.ballShape) ?? base.ballShape,
+    ballShapeTurn: booleanValue(source.ballShapeTurn, base.ballShapeTurn),
+    ballShapeCurve: rangeValue(source.ballShapeCurve, base.ballShapeCurve, FX_RANGES.curve),
+    ballShapeOpacity: rangeValue(source.ballShapeOpacity, base.ballShapeOpacity, FX_RANGES.ballShapeOpacity),
+    ballFxRays: booleanValue(source.ballFxRays, base.ballFxRays),
+    ballFxRaysTurn: booleanValue(source.ballFxRaysTurn, base.ballFxRaysTurn),
+    ballFxRaysCurve: rangeValue(source.ballFxRaysCurve, base.ballFxRaysCurve, FX_RANGES.curve),
+    ballFxTrail: booleanValue(source.ballFxTrail, base.ballFxTrail),
+    ballFxTrailOpacity: rangeValue(
+      source.ballFxTrailOpacity,
+      base.ballFxTrailOpacity,
+      FX_RANGES.trailOpacity,
+    ),
+    ballFxTrailLength: rangeValue(
+      source.ballFxTrailLength,
+      base.ballFxTrailLength,
+      FX_RANGES.trailLength,
+    ),
+    ballFxAfterglow: booleanValue(source.ballFxAfterglow, base.ballFxAfterglow),
+    ballFxAfterglowStrength: rangeValue(
+      source.ballFxAfterglowStrength,
+      base.ballFxAfterglowStrength,
+      FX_RANGES.afterglowStrength,
+    ),
+    ballFxAfterglowLength: rangeValue(
+      source.ballFxAfterglowLength,
+      base.ballFxAfterglowLength,
+      FX_RANGES.afterglowLength,
+    ),
   };
 
   if (Object.prototype.hasOwnProperty.call(source, 'pinnedGroup')) {
@@ -645,6 +785,15 @@ function normalizeBallPalette(value: unknown): BallPalette | null {
   }
 }
 
+// `none` (removed in round 10) and unknown shapes fall back to the default.
+function normalizeShape(value: unknown): BodyShape | null {
+  return oneOf(value, BODY_SHAPES);
+}
+
+function rangeValue(value: unknown, fallback: number, range: readonly [number, number]) {
+  return finiteNumberInRange(value, fallback, range[0], range[1]);
+}
+
 function booleanValue(value: unknown, fallback: boolean) {
   return typeof value === 'boolean' ? value : fallback;
 }
@@ -671,7 +820,7 @@ function finiteNumberInRange(value: unknown, fallback: number, min: number, max:
   return Math.max(min, Math.min(value, max));
 }
 
-function isPresetExportLike(value: unknown): value is { presets: unknown[] } {
+function isPresetExportLike(value: unknown): value is { presets: unknown[]; working?: unknown } {
   if (!value || typeof value !== 'object') {
     return false;
   }

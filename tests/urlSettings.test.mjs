@@ -71,12 +71,14 @@ test('url fx parameter turns the PoC motion effects on for dots and ball', () =>
   assert.equal(all.particleShape, 'star');
   assert.equal(all.ballShape, 'star');
 
-  // `none`: effects alone, with no bodies drawn.
-  const bare = settingsFromUrl(DEFAULT_SETTINGS, '?fx=none,rays');
-  assert.equal(bare.particleShape, 'none');
-  assert.equal(bare.ballShape, 'none');
-  assert.equal(bare.particleFxRays, true);
-  assert.equal(bare.particleShapeTurn || bare.ballShapeTurn, false);
+  // `sparkle`: the fixed X body. `none` was removed and is ignored.
+  const sparkle = settingsFromUrl(DEFAULT_SETTINGS, '?fx=sparkle,rays');
+  assert.equal(sparkle.particleShape, 'sparkle');
+  assert.equal(sparkle.ballShape, 'sparkle');
+  assert.equal(sparkle.particleFxRays, true);
+  // Shape `Turn` is on by default.
+  assert.equal(sparkle.particleShapeTurn && sparkle.ballShapeTurn, true);
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?fx=none').particleShape, 'circle');
 
   const fish = settingsFromUrl(DEFAULT_SETTINGS, '?fx=fish,shapeturn');
   assert.equal(fish.particleShape, 'fish');
