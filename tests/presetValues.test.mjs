@@ -106,6 +106,18 @@ test('preset edit outcome returns to Applied, shows Modified, or falls back to C
   assert.equal(presetEditOutcome(changed, applied, 'custom'), 'custom');
 });
 
+test('a change in a preset\'s My Panel rows or their order is Modified', () => {
+  const withRows = (items) => presetFromSettings(DEFAULT_SETTINGS, null, items);
+  const applied = withRows(['mode.flash', 'audio.sound']);
+
+  assert.equal(presetEditOutcome(withRows(['mode.flash', 'audio.sound']), applied, 'user:0'), 'applied');
+  assert.equal(presetEditOutcome(withRows(['audio.sound', 'mode.flash']), applied, 'user:0'), 'modified');
+  assert.equal(presetEditOutcome(withRows(['mode.flash']), applied, 'user:0'), 'modified');
+  // A preset without rows stays Applied, because the browser's list is not part of it.
+  const noRows = presetFromSettings(DEFAULT_SETTINGS, null);
+  assert.equal(presetEditOutcome(presetFromSettings(DEFAULT_SETTINGS, null), noRows, 'factory:x'), 'applied');
+});
+
 test('runtime-only settings do not turn an applied preset into Modified', () => {
   const applied = presetFromSettings(DEFAULT_SETTINGS, null);
   const runtimeOnly = presetFromSettings(

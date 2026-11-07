@@ -18,8 +18,9 @@ export type { FactoryPresetInitialFormation } from './factoryPresetData';
 
 export const FACTORY_PRESET_COUNT = 30;
 export const USER_PRESET_COUNT = 30;
-export const PRESET_EXPORT_SCHEMA_VERSION = 11;
+export const PRESET_EXPORT_SCHEMA_VERSION = 12;
 export const AUTOSAVE_WORKING_PRESET_NAME = 'Autosave working';
+export const PRESET_MY_PANEL_MAX_ITEMS = 10;
 
 const USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v1';
 const EXPORT_KIND = 'dotping-presets';
@@ -92,6 +93,10 @@ type PresetTuningSettings = Pick<
   | 'controlBallMass'
   | 'controlBallFriction'
   | 'controlBallLinearDamping'
+  | 'ballWeave'
+  | 'ballWeaveAgility'
+  | 'ballWeaveSight'
+  | 'ballWeaveWalls'
   | 'wallRestitution'
   | 'audioBallWaveform'
   | 'audioBallFrequencyHz'
@@ -138,6 +143,9 @@ type LegacySharedAudioPresetSettings = {
 
 export type PresetSettings = PresetTuningSettings & {
   pinnedGroup?: PresetPinnedGroup;
+  // The preset's own My Panel rows, in order. Missing means the preset has no
+  // rows and shows the browser's own My Panel; empty means an empty panel.
+  myPanelItems?: string[];
 };
 
 export type FactoryPreset = {
@@ -204,9 +212,11 @@ export const FACTORY_PRESETS = FACTORY_PRESET_DEFINITIONS.slice(0, FACTORY_PRESE
 export function presetFromSettings(
   settings: DotpingSettings,
   pinnedGroup: PresetPinnedGroup = null,
+  myPanelItems?: readonly string[],
 ): PresetSettings {
   return {
     pinnedGroup,
+    ...(myPanelItems ? { myPanelItems: [...myPanelItems] } : {}),
     collisionMode: settings.collisionMode,
     particlePalette: settings.particlePalette,
     dotCombiMode: settings.dotCombiMode,
@@ -230,6 +240,10 @@ export function presetFromSettings(
     controlBallMass: settings.controlBallMass,
     controlBallFriction: settings.controlBallFriction,
     controlBallLinearDamping: settings.controlBallLinearDamping,
+    ballWeave: settings.ballWeave,
+    ballWeaveAgility: settings.ballWeaveAgility,
+    ballWeaveSight: settings.ballWeaveSight,
+    ballWeaveWalls: settings.ballWeaveWalls,
     wallRestitution: settings.wallRestitution,
     audioBallWaveform: settings.audioBallWaveform,
     audioBallFrequencyHz: settings.audioBallFrequencyHz,
@@ -373,6 +387,7 @@ export function createCurrentPresetExport(
   pinnedGroup: PresetPinnedGroup = null,
   formationLabel?: string | null,
   designViewport?: Viewport | null,
+  myPanelItems?: readonly string[],
 ): PresetExportFile {
   const label = sanitizeFormationLabel(formationLabel);
   const design = normalizeDesignViewport(designViewport);
@@ -381,7 +396,7 @@ export function createCurrentPresetExport(
       name: name.trim() || 'Current',
       ...(label ? { formationLabel: label } : {}),
       ...(design ? { designViewport: design } : {}),
-      settings: presetFromSettings(settings, pinnedGroup),
+      settings: presetFromSettings(settings, pinnedGroup, myPanelItems),
     },
   ]);
 }
@@ -606,6 +621,10 @@ export function normalizePresetSettings(value: unknown): PresetSettings {
     ),
     controlBallMode: oneOf(source.controlBallMode, ['persistent', 'touch'])
       ?? base.controlBallMode,
+    ballWeave: booleanValue(source.ballWeave, base.ballWeave),
+    ballWeaveAgility: finiteNumberInRange(source.ballWeaveAgility, base.ballWeaveAgility, 0, 100),
+    ballWeaveSight: finiteNumberInRange(source.ballWeaveSight, base.ballWeaveSight, 0, 100),
+    ballWeaveWalls: booleanValue(source.ballWeaveWalls, base.ballWeaveWalls),
     controlBallRadius: finiteNumberInRange(
       source.controlBallRadius,
       base.controlBallRadius,
@@ -736,7 +755,27 @@ export function normalizePresetSettings(value: unknown): PresetSettings {
     normalized.pinnedGroup = pinnedGroupValue(source.pinnedGroup);
   }
 
+  if (Array.isArray(source.myPanelItems)) {
+    normalized.myPanelItems = myPanelItemsValue(source.myPanelItems);
+  }
+
   return normalized;
+}
+
+// Only the list's shape is checked here. Which ids exist is known to the app,
+// which skips unknown rows when the preset is applied.
+function myPanelItemsValue(values: readonly unknown[]) {
+  const items: string[] = [];
+  for (const value of values) {
+    if (
+      typeof value === 'string'
+      && !items.includes(value)
+      && items.length < PRESET_MY_PANEL_MAX_ITEMS
+    ) {
+      items.push(value);
+    }
+  }
+  return items;
 }
 
 function sanitizePresetName(name: unknown, index: number) {

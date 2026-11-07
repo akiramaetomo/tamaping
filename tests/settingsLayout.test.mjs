@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_MY_PANEL_ITEMS,
   MY_PANEL_MAX_ITEMS,
+  myPanelFromPresetItems,
   normalizeMyPanelState,
   parseMyPanelState,
   restoreDefaultMyPanelItems,
@@ -46,6 +47,15 @@ test('My Panel state drops unknown ids, duplicates and items past the cap', () =
   assert.deepEqual(parseMyPanelState('{broken', KNOWN), { items: [] });
   assert.deepEqual(parseMyPanelState('', KNOWN), { items: [] });
   assert.equal(MY_PANEL_MAX_ITEMS, 10);
+});
+
+test('a preset shows its own rows without unknown ones, or none of its own', () => {
+  assert.equal(myPanelFromPresetItems(undefined, KNOWN), null);
+  assert.deepEqual(myPanelFromPresetItems([], KNOWN), { items: [] });
+  assert.deepEqual(
+    myPanelFromPresetItems(['mode.flash', 'removed.control', 'audio.sound'], KNOWN),
+    { items: ['mode.flash', 'audio.sound'] },
+  );
 });
 
 test('My Panel starts with the default items only when nothing was saved', () => {

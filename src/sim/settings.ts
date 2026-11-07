@@ -108,6 +108,14 @@ export type DotpingSettings = {
   controlBallMass: number;
   controlBallFriction: number;
   controlBallLinearDamping: number;
+  // The released ball steers around nearby particles. See `ballWeave.ts`.
+  ballWeave: boolean;
+  // 0 to 100. How fast the ball can go and still avoid particles.
+  ballWeaveAgility: number;
+  // 0 to 100. How early the ball starts to turn.
+  ballWeaveSight: number;
+  // The ball also turns just before walls.
+  ballWeaveWalls: boolean;
   controlBallMaxSpeed: number;
   pointerVelocityScale: number;
   wallRestitution: number;
@@ -177,6 +185,10 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   controlBallMass: 100,
   controlBallFriction: 0.02,
   controlBallLinearDamping: 0.04,
+  ballWeave: false,
+  ballWeaveAgility: 50,
+  ballWeaveSight: 50,
+  ballWeaveWalls: true,
   controlBallMaxSpeed: 5200,
   pointerVelocityScale: 1,
   wallRestitution: 0.3,

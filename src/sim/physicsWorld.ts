@@ -1,3 +1,11 @@
+import {
+  nextWallTurn,
+  wallTurnVelocity,
+  weavePushFromAgility,
+  weaveRangeFromSight,
+  weaveVelocity,
+  type WallTurn,
+} from './ballWeave';
 import { contactMaterial } from './contactMaterials';
 import type { ColliderLayout, CollisionMode, DotpingSettings } from './settings';
 
@@ -92,6 +100,8 @@ export class DotpingPhysicsWorld {
   private colliderRoles = new Map<number, BodyRole>();
   private settings: DotpingSettings;
   private pointerActive = false;
+  private weaveWallTurn: WallTurn | null = null;
+  private weaveLastSpeed = 0;
   private pointerX = 0;
   private pointerY = 0;
   private particleDiagnostics: ParticleDiagnostics = emptyParticleDiagnostics();
@@ -241,6 +251,7 @@ export class DotpingPhysicsWorld {
 
     this.applyVelocityCombi(dt, previousVelocities);
     this.applyControlGravity(dt);
+    this.applyBallWeave(dt);
 
     const startedAt = performance.now();
     this.world.step(this.eventQueue);
@@ -889,6 +900,52 @@ export class DotpingPhysicsWorld {
         true,
       );
     }
+  }
+
+  // Only a released ball steers: the pointer sets the velocity while pressed.
+  private applyBallWeave(dt: number) {
+    if (!this.settings.ballWeave || !this.controlBallPresent || this.pointerActive) {
+      this.weaveWallTurn = null;
+      this.weaveLastSpeed = 0;
+      return;
+    }
+
+    const velocity = this.controlBall.linvel();
+    const ball = this.controlBall.translation();
+    const push = weavePushFromAgility(this.settings.ballWeaveAgility);
+    const speed = Math.hypot(velocity.x, velocity.y);
+    // Steering keeps the speed, so any change beyond damping came from a contact.
+    const expectedSpeed = this.weaveLastSpeed / (1 + dt * this.settings.controlBallLinearDamping);
+    const contact = Math.abs(speed - expectedSpeed) > 1;
+    this.weaveLastSpeed = speed;
+
+    this.weaveWallTurn = this.settings.ballWeaveWalls
+      ? nextWallTurn(
+          this.weaveWallTurn,
+          velocity,
+          ball,
+          this.settings.controlBallRadius,
+          this.widthValue,
+          this.heightValue,
+          push,
+          contact,
+        )
+      : null;
+
+    this.controlBall.setLinvel(
+      this.weaveWallTurn
+        ? wallTurnVelocity(velocity, this.weaveWallTurn, push, dt)
+        : weaveVelocity(
+            velocity,
+            ball,
+            this.settings.controlBallRadius + this.settings.particleRadius,
+            this.particles.map((particle) => particle.translation()),
+            dt,
+            push,
+            weaveRangeFromSight(this.settings.ballWeaveSight),
+          ),
+      true,
+    );
   }
 
   private collectImpacts() {

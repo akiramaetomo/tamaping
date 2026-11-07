@@ -5,8 +5,10 @@ import { DEFAULT_SETTINGS } from '../.test-build/sim/settings.js';
 import {
   FACTORY_PRESETS,
   PRESET_EXPORT_SCHEMA_VERSION,
+  PRESET_MY_PANEL_MAX_ITEMS,
   USER_PRESET_COUNT,
   createCurrentPresetExport,
+  createUserPresetExport,
   importUserPresets,
   parsePresetExport,
   presetFromSettings,
@@ -218,6 +220,47 @@ test('preset import accepts My Panel as a pinned group', () => {
   assert.equal(preset.settings.pinnedGroup, 'my');
 });
 
+test('a preset without My Panel rows stays without them', () => {
+  assert.equal('myPanelItems' in presetFromSettings(DEFAULT_SETTINGS, 'my'), false);
+  for (const factory of FACTORY_PRESETS) {
+    assert.equal('myPanelItems' in factory.settings, false, factory.name);
+  }
+
+  const [noKey, notAList] = parsePresetExport(JSON.stringify([
+    { name: 'No rows', settings: {} },
+    { name: 'Bad rows', settings: { myPanelItems: 'mode.flash' } },
+  ]));
+  assert.equal('myPanelItems' in noKey.settings, false);
+  assert.equal('myPanelItems' in notAList.settings, false);
+});
+
+test('preset My Panel rows keep their order, without bad entries or rows past the cap', () => {
+  const tooMany = Array.from({ length: 12 }, (_, index) => `row.${index}`);
+  const [cleaned, empty, full] = parsePresetExport(JSON.stringify([
+    { name: 'Cleaned', settings: { myPanelItems: ['b', 7, 'a', 'b', null] } },
+    { name: 'Empty', settings: { myPanelItems: [] } },
+    { name: 'Full', settings: { myPanelItems: tooMany } },
+  ]));
+
+  assert.deepEqual(cleaned.settings.myPanelItems, ['b', 'a']);
+  // An empty list is an empty panel, not a preset without rows.
+  assert.deepEqual(empty.settings.myPanelItems, []);
+  assert.deepEqual(full.settings.myPanelItems, tooMany.slice(0, PRESET_MY_PANEL_MAX_ITEMS));
+});
+
+test('preset My Panel rows survive an export and import', () => {
+  const rows = ['mode.flash', 'audio.sound'];
+  const file = createCurrentPresetExport('Work', DEFAULT_SETTINGS, 'my', null, null, rows);
+  const [read] = parsePresetExport(JSON.stringify(file));
+
+  assert.equal(file.schemaVersion, 12);
+  assert.deepEqual(read.settings.myPanelItems, rows);
+
+  const { presets } = importUserPresets(Array(USER_PRESET_COUNT).fill(null), [read], null);
+  assert.deepEqual(presets[0].settings.myPanelItems, rows);
+  assert.deepEqual(parsePresetExport(JSON.stringify(createUserPresetExport(presets)))[0].settings.myPanelItems, rows);
+});
+
 test('preset import fills missing particle rim width as pseudo-fill for legacy presets', () => {
   const [preset] = parsePresetExport(JSON.stringify([
     {
@@ -287,7 +330,7 @@ test('presets keep a valid design viewport and drop invalid ones', () => {
     null,
     { width: 1299.6, height: 700.4 },
   );
-  assert.equal(exportFile.schemaVersion, 11);
+  assert.equal(exportFile.schemaVersion, 12);
   assert.deepEqual(exportFile.presets[0].designViewport, { width: 1300, height: 700 });
   assert.equal('designViewport' in exportFile.presets[0].settings, false);
 

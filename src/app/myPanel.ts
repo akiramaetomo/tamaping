@@ -1,4 +1,6 @@
-export const MY_PANEL_MAX_ITEMS = 10;
+import { PRESET_MY_PANEL_MAX_ITEMS } from '../sim/presets';
+
+export const MY_PANEL_MAX_ITEMS = PRESET_MY_PANEL_MAX_ITEMS;
 export const MY_PANEL_STORAGE_KEY = 'dotping.myPanel.v1';
 
 // Pinning My Panel uses the shared pin slot, so only the items are saved.
@@ -46,6 +48,15 @@ export function normalizeMyPanelState(
   }
 
   return { items };
+}
+
+// The rows a preset shows, without those whose control no longer exists.
+// `null` means the preset has no rows, so the browser's own My Panel shows.
+export function myPanelFromPresetItems(
+  items: readonly string[] | undefined,
+  knownIds: ReadonlySet<string>,
+): MyPanelState | null {
+  return items ? normalizeMyPanelState({ items }, knownIds) : null;
 }
 
 export function parseMyPanelState(

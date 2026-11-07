@@ -322,6 +322,35 @@ async function runSettingsCards(page, url) {
   card = await page.evaluate(BALL_CARD_PROBE);
   check('Ball card: Details headings follow the main order',
     card.headings.join() === 'Motion,Color,Shape,Rays,Trail,Afterglow', card.headings.join());
+  const weaveProbe = `(() => {
+    const rows = [...document.querySelectorAll('[data-section="ball.details"] .hud__subgroup')[0]
+      .querySelector('.hud__subgroup-body').children];
+    const row = (name) => rows.find((item) => item.textContent.trim().startsWith(name));
+    const input = (name) => row(name).querySelector('input');
+    return {
+      weave: input('Weave').checked,
+      agilityDisabled: input('Agility').disabled,
+      sightDisabled: input('Sight').disabled,
+      wallsDisabled: input('Walls').disabled,
+      walls: input('Walls').checked,
+      agility: input('Agility').value,
+      sight: input('Sight').value,
+      order: rows.map((item) => item.textContent.trim().match(/^[A-Za-z]+/)?.[0]).join(),
+    };
+  })()`;
+  let weave = await page.evaluate(weaveProbe);
+  check('Ball card: Agility, Sight and Walls follow Weave, greyed out while Weave is off',
+    weave.order.endsWith('Weave,Agility,Sight,Walls') && !weave.weave && weave.agilityDisabled
+      && weave.sightDisabled && weave.wallsDisabled && weave.walls
+      && weave.agility === '50' && weave.sight === '50', JSON.stringify(weave));
+  const weaveToggle = `[...document.querySelectorAll('[data-section="ball.details"] .hud__subgroup')[0]
+    .querySelector('.hud__subgroup-body').children]
+    .find((item) => item.textContent.trim().startsWith('Weave')).querySelector('input').click()`;
+  await page.evaluate(weaveToggle);
+  weave = await page.evaluate(weaveProbe);
+  check('Ball card: turning Weave on enables Agility, Sight and Walls',
+    weave.weave && !weave.agilityDisabled && !weave.sightDisabled && !weave.wallsDisabled, JSON.stringify(weave));
+  await page.evaluate(weaveToggle);
   check('Ball card: Circle shows Turn and Opacity', card.shapeRows.join() === 'Turn,Opacity', card.shapeRows.join());
   const shapeTurn = await page.evaluate(`(() => {
     const row = document.querySelectorAll('[data-section="ball.details"] .hud__subgroup')[2]
@@ -534,6 +563,129 @@ async function runWorkProtection(page, url) {
   await page.evaluate(`localStorage.clear()`);
 }
 
+const MY_PANEL_ROWS = `[...document.querySelectorAll('.hud__my-items .hud__pick')]
+  .map((pick) => pick.dataset.label)`;
+const OWN_MY_PANEL = `localStorage.getItem('dotping.myPanel.v1')`;
+const SAVED_PRESET_ROWS = `JSON.parse(localStorage.getItem('dotping.userPresets.v1'))[0].settings.myPanelItems`;
+
+// A preset's rows against the browser's own list, driven through the real UI.
+async function runPresetMyPanel(page, url) {
+  for (const [label, viewport] of [['1280px', DESKTOP], ['360px', PHONE]]) {
+    const own = JSON.stringify({ items: ['mode.random'] });
+    await page.evaluate(`(() => {
+      localStorage.clear();
+      localStorage.setItem('dotping.myPanel.v1', ${JSON.stringify(own)});
+      localStorage.setItem('dotping.userPresets.v1', ${JSON.stringify(JSON.stringify([{
+        name: 'Rows',
+        settings: { pinnedGroup: 'my', myPanelItems: ['mode.flash', 'removed.control', 'audio.sound'] },
+      }]))});
+    })()`);
+    await loadApp(page, url, viewport);
+    const rows = () => page.evaluate(MY_PANEL_ROWS);
+    const removeRow = (name) => page.evaluate(
+      `document.querySelector('.hud__my-items .hud__pick[data-label=${JSON.stringify(name)}]').click()`,
+    );
+    const same = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
+    const showRows = async (name, expected) => {
+      const actual = await rows();
+      check(`preset My Panel ${label}: ${name}`, same(actual, expected), actual.join());
+    };
+
+    await showRows('the browser list shows before any preset', ['Random']);
+
+    await page.evaluate(selectPreset('user:0'));
+    await sleep(100);
+    await showRows('applying shows the preset rows without a removed control', ['Flash', 'Sound']);
+    const front = await page.evaluate(`(() => {
+      const host = document.querySelector('.pinned-settings');
+      return {
+        rows: [...host.querySelectorAll('.hud__my-items .hud__pick')].map((pick) => pick.dataset.label),
+        hidden: host.hidden,
+        pageScroll: document.documentElement.scrollWidth,
+      };
+    })()`);
+    check(`preset My Panel ${label}: a preset pinning My Panel shows its rows in front`,
+      !front.hidden && same(front.rows, ['Flash', 'Sound']) && front.pageScroll <= viewport.width,
+      JSON.stringify(front));
+    check(`preset My Panel ${label}: applying leaves the browser list`,
+      (await page.evaluate(OWN_MY_PANEL)) === own);
+
+    await removeRow('Sound');
+    await sleep(100);
+    await showRows('removing changes the shown rows', ['Flash']);
+    check(`preset My Panel ${label}: a row change shows Modified and leaves the browser list`,
+      (await page.evaluate(PRESET_STATUS)) === 'Modified' && (await page.evaluate(OWN_MY_PANEL)) === own,
+      await page.evaluate(PRESET_STATUS));
+
+    await sleep(800);
+    await loadApp(page, url, viewport);
+    await showRows('a reload keeps the changed rows', ['Flash']);
+    check(`preset My Panel ${label}: a reload keeps Modified`,
+      (await page.evaluate(PRESET_STATUS)) === 'Modified', await page.evaluate(PRESET_STATUS));
+
+    await page.evaluate(selectPreset('user:0'));
+    await sleep(100);
+    await showRows('applying again discards the change', ['Flash', 'Sound']);
+    check(`preset My Panel ${label}: applying again shows Applied`,
+      (await page.evaluate(PRESET_STATUS)) === 'Applied', await page.evaluate(PRESET_STATUS));
+
+    await removeRow('Flash');
+    await page.evaluate(`(() => {
+      const slot = document.querySelector('.hud__preset-save-select');
+      slot.value = '0';
+      slot.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('.hud__preset-save').click();
+    })()`);
+    await sleep(100);
+    const saved = await page.evaluate(SAVED_PRESET_ROWS);
+    check(`preset My Panel ${label}: saving stores the shown rows`, same(saved, ['audio.sound']), `${saved}`);
+
+    await page.evaluate(selectPreset('factory:factory-1'));
+    await sleep(100);
+    await showRows('a preset without rows shows the browser list', ['Random']);
+    await page.evaluate(selectPreset('user:0'));
+    await sleep(100);
+    await showRows('applying the saved preset shows the saved rows', ['Sound']);
+
+    await page.evaluate(selectPreset('factory:factory-1'));
+    await sleep(100);
+    await removeRow('Random');
+    await sleep(100);
+    check(`preset My Panel ${label}: without preset rows, a pick changes the browser list and stays Applied`,
+      (await page.evaluate(OWN_MY_PANEL)) === JSON.stringify({ items: [] })
+        && (await page.evaluate(PRESET_STATUS)) === 'Applied',
+      await page.evaluate(PRESET_STATUS));
+
+    // Choosing a preset from the Preset row in My Panel, which that choice may rebuild.
+    await sleep(800);
+    await page.evaluate(`(() => {
+      localStorage.clear();
+      localStorage.setItem('dotping.myPanel.v1', ${JSON.stringify(JSON.stringify({ items: ['preset.select'] }))});
+      localStorage.setItem('dotping.userPresets.v1', ${JSON.stringify(JSON.stringify([
+        { name: 'Same rows', settings: { myPanelItems: ['preset.select'] } },
+        { name: 'More rows', settings: { myPanelItems: ['preset.select', 'mode.flash'] } },
+      ]))});
+    })()`);
+    await loadApp(page, url, viewport);
+    const chooseInMyPanel = (value) => page.evaluate(`(() => {
+      window.__myPanelSelect = document.querySelector('.hud__my-items select');
+      window.__myPanelSelect.value = ${JSON.stringify(value)};
+      window.__myPanelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      const select = document.querySelector('.hud__my-items select');
+      return { kept: select === window.__myPanelSelect, value: select.value };
+    })()`);
+    const kept = await chooseInMyPanel('user:0');
+    check(`preset My Panel ${label}: the same rows keep the Preset row in My Panel`,
+      kept.kept && kept.value === 'user:0', JSON.stringify(kept));
+    const rebuilt = await chooseInMyPanel('user:1');
+    await showRows('other rows rebuild My Panel from its Preset row', ['Preset', 'Flash']);
+    check(`preset My Panel ${label}: the rebuilt Preset row shows the chosen preset`,
+      !rebuilt.kept && rebuilt.value === 'user:1', JSON.stringify(rebuilt));
+    await sleep(800);
+  }
+  await page.evaluate(`localStorage.clear()`);
+}
+
 // The browser's file picker cannot run headless, so it hands out a real file
 // handle from the origin's private file system instead.
 const FAKE_PICKER = `window.showSaveFilePicker = async () => {
@@ -656,6 +808,7 @@ async function main() {
     await runPhone(page, url);
     await runSettingsCards(page, url);
     await runWorkProtection(page, url);
+    await runPresetMyPanel(page, url);
     await runAutoBackup(page, url);
 
     await loadApp(page, `${url}?debug=1`, DESKTOP);

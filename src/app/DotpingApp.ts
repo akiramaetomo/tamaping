@@ -110,6 +110,7 @@ import {
   EMPTY_MY_PANEL,
   MY_PANEL_MAX_ITEMS,
   loadMyPanelState,
+  myPanelFromPresetItems,
   restoreDefaultMyPanelItems,
   saveMyPanelState,
   toggleMyPanelItem,
@@ -282,7 +283,10 @@ export class DotpingApp {
   private cardPicks: PickButton[] = [];
   private myPanelPicks: PickButton[] = [];
   private myPanelInstances: LiveControlInstance[] = [];
+  // The browser's own list.
   private myPanelState: MyPanelState = EMPTY_MY_PANEL;
+  // A copy of the applied preset's rows; `null` shows the browser's own list.
+  private presetMyPanel: MyPanelState | null = null;
   private myPanelEl: HTMLDivElement | null = null;
   private readonly myPanelMarker = document.createComment('dotping my settings group');
   private myPanelItemsEl: HTMLDivElement | null = null;
@@ -310,7 +314,7 @@ export class DotpingApp {
     this.settings = settingsFromUrl(DEFAULT_SETTINGS, window.location.search);
     const restored = this.beginWorkingStateRestore();
     if (restored) {
-      const { pinnedGroup: _pinnedGroup, ...settings } = restored.settings;
+      const { pinnedGroup: _pinnedGroup, myPanelItems: _myPanelItems, ...settings } = restored.settings;
       this.settings = { ...this.settings, ...settings };
       this.designViewport = restored.designViewport;
     }
@@ -392,6 +396,7 @@ export class DotpingApp {
   }
 
   private finishWorkingStateRestore(restored: WorkingState) {
+    this.showPresetMyPanel(restored.settings.myPanelItems);
     this.setPinnedGroup(restored.settings.pinnedGroup ?? null, false);
     this.lastAppliedPresetValue = restored.lastAppliedValue;
     if (
@@ -400,14 +405,19 @@ export class DotpingApp {
       && presetSettingsForValue(restored.presetValue, this.userPresets)
     ) {
       // Rebuilt in the app's own key order, which the Modified comparison needs.
-      const { pinnedGroup, ...snapshot } = restored.snapshot;
+      const { pinnedGroup, myPanelItems, ...snapshot } = restored.snapshot;
       this.activePresetValue = restored.presetValue;
-      this.activePresetSnapshot = presetFromSettings({ ...this.settings, ...snapshot }, pinnedGroup ?? null);
+      // Unknown rows are skipped here too, as they are in the shown list.
+      this.activePresetSnapshot = presetFromSettings(
+        { ...this.settings, ...snapshot },
+        pinnedGroup ?? null,
+        myPanelFromPresetItems(myPanelItems, this.controls.ids())?.items,
+      );
     }
     this.syncUiFromSettings();
     this.syncPresetSelectSelection();
     const outcome = presetEditOutcome(
-      presetFromSettings(this.settings, this.activePinnedGroupId),
+      this.currentPresetSettings(),
       this.activePresetSnapshot,
       this.activePresetValue,
     );
@@ -424,7 +434,7 @@ export class DotpingApp {
       allowed ? environment : { ...environment, pickFile: null },
       () => createAutosaveExport(
         this.userPresets,
-        presetFromSettings(this.settings, this.activePinnedGroupId),
+        presetFromSettings(this.settings, this.activePinnedGroupId, this.shownMyPanel.items),
         presetFormationLabel(this.activePresetValue, this.userPresets),
         this.worldViewport(),
       ),
@@ -465,7 +475,7 @@ export class DotpingApp {
 
   private readWorkingState(): WorkingState {
     return {
-      settings: presetFromSettings(this.settings, this.activePinnedGroupId),
+      settings: this.currentPresetSettings(),
       presetValue: this.activePresetValue,
       snapshot: this.activePresetSnapshot,
       lastAppliedValue: this.lastAppliedPresetValue,
@@ -782,6 +792,49 @@ export class DotpingApp {
       slider: () => sliderFromDamping(this.settings.controlBallLinearDamping),
       format: () => formatDamping(this.settings.controlBallLinearDamping),
       onInput: (value) => this.updateSettings({ controlBallLinearDamping: dampingFromSlider(value) }),
+    }));
+    const ballWeave = el(toggleSetting({
+      id: 'ball.weave',
+      card: 'ball',
+      label: 'Weave',
+      panelLabel: 'Ball weave',
+      read: () => this.settings.ballWeave,
+      onChange: (checked) => this.updateSettings({ ballWeave: checked }),
+    }));
+    const ballWeaveAgility = el(rangeSetting({
+      id: 'ball.weave-agility',
+      card: 'ball',
+      label: 'Agility',
+      panelLabel: 'Ball weave agility',
+      min: 0,
+      max: 100,
+      step: 1,
+      slider: () => this.settings.ballWeaveAgility,
+      format: () => `${Math.round(this.settings.ballWeaveAgility)}`,
+      onInput: (value) => this.updateSettings({ ballWeaveAgility: value }),
+      enabled: () => this.settings.ballWeave,
+    }));
+    const ballWeaveSight = el(rangeSetting({
+      id: 'ball.weave-sight',
+      card: 'ball',
+      label: 'Sight',
+      panelLabel: 'Ball weave sight',
+      min: 0,
+      max: 100,
+      step: 1,
+      slider: () => this.settings.ballWeaveSight,
+      format: () => `${Math.round(this.settings.ballWeaveSight)}`,
+      onInput: (value) => this.updateSettings({ ballWeaveSight: value }),
+      enabled: () => this.settings.ballWeave,
+    }));
+    const ballWeaveWalls = el(toggleSetting({
+      id: 'ball.weave-walls',
+      card: 'ball',
+      label: 'Walls',
+      panelLabel: 'Ball weave walls',
+      read: () => this.settings.ballWeaveWalls,
+      onChange: (checked) => this.updateSettings({ ballWeaveWalls: checked }),
+      enabled: () => this.settings.ballWeave,
     }));
     const ballColor = el(selectSetting<BallPalette>({
       id: 'ball.color',
@@ -1305,7 +1358,15 @@ export class DotpingApp {
       ballColor,
       ...ballShapeEffects.main,
       createSettingsSection('ball.details', 'Details', [
-        createSettingsSubgroup('Motion', [ballMode, ballWeight, ballDamping]),
+        createSettingsSubgroup('Motion', [
+          ballMode,
+          ballWeight,
+          ballDamping,
+          ballWeave,
+          ballWeaveAgility,
+          ballWeaveSight,
+          ballWeaveWalls,
+        ]),
         createSettingsSubgroup('Color', [ballRim]),
         ...ballShapeEffects.details,
       ]),
@@ -1523,9 +1584,42 @@ export class DotpingApp {
     this.syncPickButton(id, button);
   }
 
+  private get shownMyPanel() {
+    return this.presetMyPanel ?? this.myPanelState;
+  }
+
+  // The current state as a preset. Rows are included only while a preset's copy
+  // is shown; the browser's own list is not part of the preset.
+  private currentPresetSettings() {
+    return presetFromSettings(this.settings, this.activePinnedGroupId, this.presetMyPanel?.items);
+  }
+
+  // Rebuilds the rows only when they change, so choosing a preset from the
+  // Preset row in My Panel does not replace that row without need.
+  private showPresetMyPanel(items: readonly string[] | undefined) {
+    const before = this.shownMyPanel.items;
+    this.presetMyPanel = myPanelFromPresetItems(items, this.controls.ids());
+    const after = this.shownMyPanel.items;
+    if (before.length !== after.length || before.some((id, index) => id !== after[index])) {
+      this.renderMyPanel();
+    }
+  }
+
+  private changeShownMyPanel(next: MyPanelState) {
+    if (this.presetMyPanel) {
+      this.presetMyPanel = next;
+      this.renderMyPanel();
+      this.markPresetCustom();
+      return;
+    }
+    this.myPanelState = next;
+    saveMyPanelState(next);
+    this.renderMyPanel();
+  }
+
   private syncPickButton(id: string, button: HTMLButtonElement) {
-    const picked = this.myPanelState.items.includes(id);
-    const full = this.myPanelState.items.length >= MY_PANEL_MAX_ITEMS;
+    const picked = this.shownMyPanel.items.includes(id);
+    const full = this.shownMyPanel.items.length >= MY_PANEL_MAX_ITEMS;
     const label = button.dataset.label ?? id;
     button.setAttribute('aria-pressed', `${picked}`);
     button.disabled = !picked && full;
@@ -1559,9 +1653,7 @@ export class DotpingApp {
     restoreDefault.title = 'Restore the default My Panel items';
     restoreDefault.setAttribute('aria-label', restoreDefault.title);
     restoreDefault.addEventListener('click', () => {
-      this.myPanelState = restoreDefaultMyPanelItems(this.controls.ids());
-      saveMyPanelState(this.myPanelState);
-      this.renderMyPanel();
+      this.changeShownMyPanel(restoreDefaultMyPanelItems(this.controls.ids()));
     });
 
     const items = document.createElement('div');
@@ -1592,7 +1684,7 @@ export class DotpingApp {
     itemsEl.replaceChildren();
 
     let actionRow: HTMLDivElement | null = null;
-    for (const id of this.myPanelState.items) {
+    for (const id of this.shownMyPanel.items) {
       const definition = this.controls.definition(id);
       if (!definition) {
         continue;
@@ -1616,7 +1708,7 @@ export class DotpingApp {
       }
     }
 
-    const count = this.myPanelState.items.length;
+    const count = this.shownMyPanel.items.length;
     if (this.myPanelHintEl) {
       this.myPanelHintEl.hidden = count > 0;
     }
@@ -1628,13 +1720,11 @@ export class DotpingApp {
   }
 
   private toggleMyPanelItem(id: string) {
-    const next = toggleMyPanelItem(this.myPanelState, id);
-    if (next === this.myPanelState) {
-      return;
+    const shown = this.shownMyPanel;
+    const next = toggleMyPanelItem(shown, id);
+    if (next !== shown) {
+      this.changeShownMyPanel(next);
     }
-    this.myPanelState = next;
-    saveMyPanelState(this.myPanelState);
-    this.renderMyPanel();
   }
 
   private setSettingsTab(tab: SettingsTabId) {
@@ -1978,7 +2068,7 @@ export class DotpingApp {
       myPanel &&
       !settingsOpen &&
       myPanelPinned &&
-      this.myPanelState.items.length > 0,
+      this.shownMyPanel.items.length > 0,
     );
 
     if (pinnedHost) {
@@ -2170,15 +2260,16 @@ export class DotpingApp {
     selectedValue: string,
     initialFormation: FactoryPresetInitialFormation | null = null,
   ) {
-    const { pinnedGroup, ...settings } = preset;
+    const { pinnedGroup, myPanelItems, ...settings } = preset;
     this.updateSettings(settings, true, false);
+    this.showPresetMyPanel(myPanelItems);
     if (Object.prototype.hasOwnProperty.call(preset, 'pinnedGroup')) {
       this.setPinnedGroup(pinnedGroup ?? null, false);
     }
     this.syncUiFromSettings();
     this.activePresetValue = selectedValue;
     this.lastAppliedPresetValue = selectedValue;
-    this.activePresetSnapshot = presetFromSettings(this.settings, this.activePinnedGroupId);
+    this.activePresetSnapshot = this.currentPresetSettings();
     this.syncPresetSelectSelection();
     this.applyInitialPresetFormation(initialFormation);
     this.setPresetStatus('Applied');
@@ -2204,18 +2295,21 @@ export class DotpingApp {
       return;
     }
 
+    // The saved preset owns the shown rows from here on; later changes reach
+    // only this copy, not the browser's own list.
+    this.presetMyPanel = { items: [...this.shownMyPanel.items] };
     this.userPresets = saveUserPreset(
       this.userPresets,
       index,
       this.presetPanel?.saveName ?? '',
-      presetFromSettings(this.settings, this.activePinnedGroupId),
+      this.currentPresetSettings(),
       this.presetPanel?.formationLabel ?? '',
       this.worldViewport(),
     );
     this.designViewport = this.userPresets[index]?.designViewport ?? this.designViewport;
     this.syncViewScaleButton();
     const selectedValue = `user:${index}`;
-    this.activePresetSnapshot = presetFromSettings(this.settings, this.activePinnedGroupId);
+    this.activePresetSnapshot = this.currentPresetSettings();
     this.renderPresetOptions(selectedValue);
     this.renderSaveDestinationOptions('');
     this.setPresetStatus(`Saved User ${index + 1}`);
@@ -2254,6 +2348,7 @@ export class DotpingApp {
       this.activePinnedGroupId,
       presetFormationLabel(this.activePresetValue, this.userPresets),
       this.worldViewport(),
+      this.shownMyPanel.items,
     );
     this.downloadPresetJson(exportFile, presetExportFilename('dotping-current-preset', new Date()));
     this.setPresetStatus('Exported current');
@@ -2328,7 +2423,7 @@ export class DotpingApp {
 
   private markPresetCustom(status = 'Custom') {
     const outcome = presetEditOutcome(
-      presetFromSettings(this.settings, this.activePinnedGroupId),
+      this.currentPresetSettings(),
       this.activePresetSnapshot,
       this.activePresetValue,
     );

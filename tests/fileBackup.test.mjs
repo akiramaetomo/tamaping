@@ -223,3 +223,15 @@ test('an autosave file imports its presets and the working tuning', () => {
   assert.equal(imported[1].formationLabel, 'Label');
   assert.deepEqual(imported[1].designViewport, { width: 402, height: 717 });
 });
+
+test('the backup keeps My Panel rows of the work in progress and of saved presets', () => {
+  const rows = ['mode.flash', 'audio.sound'];
+  const file = createAutosaveExport(
+    [{ name: 'Saved work', settings: presetFromSettings(DEFAULT_SETTINGS, 'my', ['mode.random']) }],
+    presetFromSettings(DEFAULT_SETTINGS, 'my', rows),
+  );
+
+  const imported = parsePresetExport(JSON.stringify(file));
+  assert.deepEqual(imported[0].settings.myPanelItems, ['mode.random']);
+  assert.deepEqual(imported[1].settings.myPanelItems, rows);
+});

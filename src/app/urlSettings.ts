@@ -48,6 +48,27 @@ export function settingsFromUrl(defaults: DotpingSettings, search: string): Dotp
     settings.particleShapeTurn = true;
     settings.ballShapeTurn = true;
   }
+  // `weave` opens the trial scene for judging `Weave` by hand. Particles barely
+  // move, and the gaps between them are wider than the ball.
+  if (fx.includes('weave')) {
+    Object.assign(settings, {
+      ballWeave: true,
+      ballShape: 'fish',
+      ballShapeTurn: true,
+      controlBallRadius: 12,
+      controlBallMass: 0.1,
+      controlBallLinearDamping: 0,
+      particleCount: 100,
+      particleRadius: 4,
+      particleMass: 100,
+      particleLinearDamping: 100,
+      collisionMode: 'collision-physical',
+      gravityMode: 'antigravity',
+      gravityStrength: 0.5,
+      contactRestitution: 0.8,
+      wallRestitution: 0.8,
+    } satisfies Partial<DotpingSettings>);
+  }
 
   if (debugVisibleFromParams(params)) {
     settings.debug = true;

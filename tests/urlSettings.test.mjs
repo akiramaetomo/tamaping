@@ -54,6 +54,14 @@ test('url debug parameters open the debug overlay', () => {
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?debug=0').debug, DEFAULT_SETTINGS.debug);
 });
 
+test('url fx=weave opens the Weave trial scene; nothing else turns weave on', () => {
+  const trial = settingsFromUrl(DEFAULT_SETTINGS, '?fx=weave');
+  assert.equal(trial.ballWeave, true);
+  assert.equal(trial.ballShape, 'fish');
+  assert.equal(trial.particleShape, 'circle');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?fx=fish').ballWeave, false);
+});
+
 test('url fx parameter turns the PoC motion effects on for dots and ball', () => {
   const off = settingsFromUrl(DEFAULT_SETTINGS, '');
   assert.equal(off.particleFxRays || off.particleFxTrail, false);

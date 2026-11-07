@@ -43,6 +43,20 @@ test('diagnostic URLs neither restore nor save the working state', () => {
   assert.equal(workingStateAllowed('?dbg=perf'), false);
 });
 
+test('working state keeps a preset\'s My Panel rows, and their absence', () => {
+  const rows = ['mode.flash', 'audio.sound'];
+  const parsed = parseWorkingState(JSON.stringify(workingState({
+    settings: presetFromSettings(DEFAULT_SETTINGS, 'my', rows),
+    snapshot: presetFromSettings(DEFAULT_SETTINGS, 'my', ['mode.flash']),
+  })));
+  assert.deepEqual(parsed.settings.myPanelItems, rows);
+  assert.deepEqual(parsed.snapshot.myPanelItems, ['mode.flash']);
+
+  const without = parseWorkingState(JSON.stringify(workingState()));
+  assert.equal('myPanelItems' in without.settings, false);
+  assert.equal('myPanelItems' in without.snapshot, false);
+});
+
 test('working state keeps its values through a save and parse', () => {
   const parsed = parseWorkingState(JSON.stringify(workingState()));
 
