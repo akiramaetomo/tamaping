@@ -7,6 +7,12 @@ import {
   type WallTurn,
 } from './ballWeave';
 import { contactMaterial } from './contactMaterials';
+import {
+  randomDirectionVelocity,
+  spiralSpeedFactor,
+  startBallPosition,
+  type PresetStart,
+} from './presetStart';
 import type { ColliderLayout, CollisionMode, DotpingSettings } from './settings';
 
 type RapierModule = any;
@@ -181,12 +187,63 @@ export class DotpingPhysicsWorld {
       return;
     }
 
-    const positions = this.flashParticlePositions();
+    const positions = this.spiralParticlePositions();
     for (let index = 0; index < this.particles.length; index += 1) {
       const particle = this.particles[index];
       const position = positions[index];
+      const pulse = index === 0 ? 0 : LINK_FLASH_SPEED * (0.65 + ((index % 5) * 0.07));
       particle.setTranslation({ x: position.x, y: position.y }, true);
-      particle.setLinvel({ x: position.vx, y: position.vy }, true);
+      particle.setLinvel({ x: position.tx * pulse, y: position.ty * pulse }, true);
+    }
+  }
+
+  // Puts the scene in a preset's start state. The Ball goes first, because the
+  // spiral winds around it. `nameTargets` holds the name layout; without it a
+  // `name` start falls back to the scatter. Settings stay as they are.
+  applyStart(
+    start: PresetStart,
+    nameTargets: ParticleFormationTarget[] | null = null,
+    random: () => number = Math.random,
+  ) {
+    const radius = this.settings.controlBallRadius;
+    const ball = startBallPosition(start, this.widthValue, this.heightValue, radius);
+    // An absent Ball (`Touch`) keeps its place but must not drift while hidden.
+    const ballVelocity = this.controlBallPresent
+      ? randomDirectionVelocity(start.ballSpeed, random)
+      : { vx: 0, vy: 0 };
+    this.controlBall.setTranslation(ball, true);
+    this.controlBall.setLinvel({ x: ballVelocity.vx, y: ballVelocity.vy }, true);
+    this.weaveWallTurn = null;
+    this.weaveLastSpeed = Math.hypot(ballVelocity.vx, ballVelocity.vy);
+
+    const count = this.particles.length;
+    if (count <= 0) {
+      return;
+    }
+
+    const particleRadius = this.settings.particleRadius;
+    const useName = start.formation === 'name' && nameTargets !== null && nameTargets.length > 0;
+    const spiral = start.formation === 'spiral' ? this.spiralParticlePositions() : null;
+    const scatter = !spiral && !useName ? this.particlePositions() : null;
+    for (let index = 0; index < count; index += 1) {
+      let x: number;
+      let y: number;
+      let velocity: { vx: number; vy: number };
+      if (spiral) {
+        const position = spiral[index];
+        const speed = start.particleSpeed * spiralSpeedFactor(index);
+        x = position.x;
+        y = position.y;
+        velocity = { vx: position.tx * speed, vy: position.ty * speed };
+      } else {
+        const target = useName ? nameTargets![index % nameTargets!.length] : scatter![index];
+        x = clampToPlayfield(target.x, particleRadius, this.widthValue);
+        y = clampToPlayfield(target.y, particleRadius, this.heightValue);
+        velocity = randomDirectionVelocity(start.particleSpeed, random);
+      }
+      const particle = this.particles[index];
+      particle.setTranslation({ x, y }, true);
+      particle.setLinvel({ x: velocity.vx, y: velocity.vy }, true);
     }
   }
 
@@ -531,14 +588,16 @@ export class DotpingPhysicsWorld {
     return positions;
   }
 
-  private flashParticlePositions() {
+  // Particles in ID order along a spiral around the Ball, each with the unit
+  // direction along the spiral (`tx`, `ty`).
+  private spiralParticlePositions() {
     const count = this.particles.length;
     const radius = this.settings.particleRadius;
     const spacing = Math.max(radius * 2.35, 10);
     const control = this.controlBall.translation();
     const startRadius = this.settings.controlBallRadius + radius * 3.2;
     const radialStep = spacing * FLASH_SPIRAL_RADIAL_STEP_SCALE;
-    const positions: Array<{ x: number; y: number; vx: number; vy: number }> = [];
+    const positions: Array<{ x: number; y: number; tx: number; ty: number }> = [];
     let theta = -Math.PI * 0.35;
 
     for (let index = 0; index < count; index += 1) {
@@ -553,14 +612,8 @@ export class DotpingPhysicsWorld {
       const tangent = distance > 0.001
         ? { x: -dy / distance, y: dx / distance }
         : { x: 0, y: 0 };
-      const pulse = index === 0 ? 0 : LINK_FLASH_SPEED * (0.65 + ((index % 5) * 0.07));
 
-      positions.push({
-        x,
-        y,
-        vx: tangent.x * pulse,
-        vy: tangent.y * pulse,
-      });
+      positions.push({ x, y, tx: tangent.x, ty: tangent.y });
 
       theta += (spacing / Math.max(spiralRadius, spacing)) * 1.08;
     }

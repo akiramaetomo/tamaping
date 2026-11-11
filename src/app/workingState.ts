@@ -1,4 +1,5 @@
 import { normalizePresetSettings, type PresetSettings } from '../sim/presets';
+import { DEFAULT_PRESET_START, normalizePresetStart, type PresetStart } from '../sim/presetStart';
 import { DEFAULT_DESIGN_VIEWPORT, normalizeDesignViewport, type Viewport } from '../sim/viewScale';
 
 // Keeps unsaved tuning across reloads and tab kills, inside the browser only.
@@ -17,6 +18,9 @@ export type WorkingState = {
   snapshot: PresetSettings | null;
   lastAppliedValue: string | null;
   designViewport: Viewport;
+  // The start shown in the Start block. A reload restores it but does not
+  // replay it.
+  start: PresetStart;
 };
 
 type WorkingStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -46,6 +50,9 @@ export function parseWorkingState(json: string | null): WorkingState | null {
         : null,
       lastAppliedValue: typeof parsed.lastAppliedValue === 'string' ? parsed.lastAppliedValue : null,
       designViewport: normalizeDesignViewport(parsed.designViewport) ?? DEFAULT_DESIGN_VIEWPORT,
+      start: parsed.start && typeof parsed.start === 'object'
+        ? normalizePresetStart(parsed.start)
+        : { ...DEFAULT_PRESET_START },
     };
   } catch {
     return null;

@@ -9,20 +9,25 @@ import {
   USER_PRESET_COUNT,
   createCurrentPresetExport,
   createUserPresetExport,
-  importUserPresets,
   parsePresetExport,
   presetFromSettings,
 } from '../.test-build/sim/presets.js';
+import { applyPresetImport, planPresetImport } from '../.test-build/sim/presetImport.js';
+
+function importInto(current, incoming) {
+  const plan = planPresetImport(current, incoming);
+  return applyPresetImport(current, plan, []);
+}
 
 test('factory and user preset capacities match the curated release set', () => {
   assert.equal(FACTORY_PRESETS.length, 30);
-  assert.equal(USER_PRESET_COUNT, 30);
+  assert.equal(USER_PRESET_COUNT, 60);
   assert.equal(FACTORY_PRESETS[0].name, '1. Hello Ping');
   assert.equal(FACTORY_PRESETS[0].formationLabel, 'Hello Ping');
-  assert.equal(FACTORY_PRESETS[0].initialFormation, 'name');
+  assert.equal(FACTORY_PRESETS[0].start.formation, 'name');
   assert.equal(FACTORY_PRESETS[1].name, '2. Blue Sand Cosmos');
   assert.equal(FACTORY_PRESETS[1].formationLabel, 'Blue SAND');
-  assert.equal(FACTORY_PRESETS[1].initialFormation, 'name');
+  assert.equal(FACTORY_PRESETS[1].start.formation, 'name');
   assert.equal(FACTORY_PRESETS[2].name, '3. ラピスグラス');
   assert.equal('formationLabel' in FACTORY_PRESETS[2], false);
   assert.equal(FACTORY_PRESETS[3].name, '4. おれんじブリブリ');
@@ -35,7 +40,7 @@ test('factory and user preset capacities match the curated release set', () => {
   assert.equal(FACTORY_PRESETS[17].name, '18. Chromatic Star Cosmos');
   assert.equal(FACTORY_PRESETS[17].formationLabel, 'Chroma Star');
   assert.equal(FACTORY_PRESETS[23].name, '24. Play with Yellow Python');
-  assert.equal(FACTORY_PRESETS[23].initialFormation, 'flash');
+  assert.equal(FACTORY_PRESETS[23].start.formation, 'spiral');
   assert.equal(FACTORY_PRESETS[26].name, '✦m ネオン盆踊り');
   assert.equal(FACTORY_PRESETS[26].formationLabel, 'BON');
   assert.equal(FACTORY_PRESETS[24].name.startsWith('✦'), true);
@@ -47,11 +52,11 @@ test('factory and user preset capacities match the curated release set', () => {
     FACTORY_PRESETS.reduce(
       (counts, preset) => ({
         ...counts,
-        [preset.initialFormation]: counts[preset.initialFormation] + 1,
+        [preset.start.formation]: counts[preset.start.formation] + 1,
       }),
-      { random: 0, flash: 0, name: 0 },
+      { random: 0, spiral: 0, name: 0 },
     ),
-    { random: 7, flash: 11, name: 12 },
+    { random: 7, spiral: 11, name: 12 },
   );
 });
 
@@ -253,10 +258,10 @@ test('preset My Panel rows survive an export and import', () => {
   const file = createCurrentPresetExport('Work', DEFAULT_SETTINGS, 'my', null, null, rows);
   const [read] = parsePresetExport(JSON.stringify(file));
 
-  assert.equal(file.schemaVersion, 12);
+  assert.equal(file.schemaVersion, PRESET_EXPORT_SCHEMA_VERSION);
   assert.deepEqual(read.settings.myPanelItems, rows);
 
-  const { presets } = importUserPresets(Array(USER_PRESET_COUNT).fill(null), [read], null);
+  const { presets } = importInto(Array(USER_PRESET_COUNT).fill(null), [read]);
   assert.deepEqual(presets[0].settings.myPanelItems, rows);
   assert.deepEqual(parsePresetExport(JSON.stringify(createUserPresetExport(presets)))[0].settings.myPanelItems, rows);
 });
@@ -279,7 +284,7 @@ test('preset import fills missing particle rim width as pseudo-fill for legacy p
   assert.equal('particleFillEnabled' in preset.settings, false);
 });
 
-test('user preset import fills empty slots before using the overwrite range', () => {
+test('user preset import fills empty slots in file order', () => {
   const basePreset = {
     name: 'Existing',
     settings: presetFromSettings(DEFAULT_SETTINGS),
@@ -292,34 +297,16 @@ test('user preset import fills empty slots before using the overwrite range', ()
   current[0] = basePreset;
   current[2] = basePreset;
 
-  const result = importUserPresets(current, incoming, 10);
+  const result = importInto(current, incoming);
 
-  assert.equal(result.imported, 2);
+  assert.equal(result.added, 2);
   assert.equal(result.presets[0]?.name, 'Existing');
   assert.equal(result.presets[1]?.name, 'First Incoming');
   assert.equal(result.presets[1]?.settings.particleCount, 101);
   assert.equal(result.presets[2]?.name, 'Existing');
   assert.equal(result.presets[3]?.name, 'Second Incoming');
   assert.equal(result.presets[3]?.settings.particleCount, 202);
-  assert.equal(result.presets[10], null);
-});
-
-test('user preset import stops at the end of the overwrite range when no slots are empty', () => {
-  const full = Array.from({ length: USER_PRESET_COUNT }, (_, index) => ({
-    name: `Existing ${index + 1}`,
-    settings: presetFromSettings(DEFAULT_SETTINGS),
-  }));
-  const incoming = [
-    { name: 'Overwrite A', settings: presetFromSettings(DEFAULT_SETTINGS) },
-    { name: 'Overwrite B', settings: presetFromSettings(DEFAULT_SETTINGS) },
-    { name: 'Overwrite C', settings: presetFromSettings(DEFAULT_SETTINGS) },
-  ];
-
-  const result = importUserPresets(full, incoming, USER_PRESET_COUNT - 2);
-
-  assert.equal(result.imported, 2);
-  assert.equal(result.presets[USER_PRESET_COUNT - 2]?.name, 'Overwrite A');
-  assert.equal(result.presets[USER_PRESET_COUNT - 1]?.name, 'Overwrite B');
+  assert.equal(result.presets[4], null);
 });
 
 test('presets keep a valid design viewport and drop invalid ones', () => {
@@ -330,7 +317,7 @@ test('presets keep a valid design viewport and drop invalid ones', () => {
     null,
     { width: 1299.6, height: 700.4 },
   );
-  assert.equal(exportFile.schemaVersion, 12);
+  assert.equal(exportFile.schemaVersion, PRESET_EXPORT_SCHEMA_VERSION);
   assert.deepEqual(exportFile.presets[0].designViewport, { width: 1300, height: 700 });
   assert.equal('designViewport' in exportFile.presets[0].settings, false);
 
@@ -343,7 +330,7 @@ test('presets keep a valid design viewport and drop invalid ones', () => {
   assert.equal('designViewport' in dropped, false);
   assert.equal('designViewport' in legacy, false);
 
-  const { presets } = importUserPresets(Array(USER_PRESET_COUNT).fill(null), [kept, legacy], null);
+  const { presets } = importInto(Array(USER_PRESET_COUNT).fill(null), [kept, legacy]);
   assert.deepEqual(presets[0].designViewport, { width: 1300, height: 700 });
   assert.equal('designViewport' in presets[1], false);
 });

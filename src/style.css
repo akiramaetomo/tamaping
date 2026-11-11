@@ -462,6 +462,22 @@ button:disabled {
   max-width: none;
 }
 
+.hud__preset-start {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid rgb(144 238 210 / 20%);
+  border-radius: 6px;
+}
+
+.hud__preset-start-title {
+  color: #b8d8d3;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .hud__preset-save,
 .hud__preset-delete {
   grid-column: 2;
@@ -1514,4 +1530,123 @@ button:disabled {
 
 .pinned-settings .hud__pin-button {
   min-height: 24px;
+}
+
+/* Import review panel (round 16). A modal dialog over the stage. */
+.import-review {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 12px;
+  border: 1px solid rgb(144 238 210 / 40%);
+  border-radius: 8px;
+  background: rgb(9 20 28 / 96%);
+  color: #e8fff8;
+  font-size: 13px;
+  box-shadow: 0 18px 40px rgb(0 0 0 / 45%);
+  overflow: hidden;
+}
+
+.import-review[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.import-review::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
+
+.import-review__title {
+  margin: 0;
+  font-size: 15px;
+  color: var(--accent-preset);
+}
+
+.import-review__file,
+.import-review__summary,
+.import-review__free,
+.import-review__message {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.import-review__file,
+.import-review__free {
+  color: rgb(232 255 248 / 70%);
+}
+
+.import-review__bulk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.import-review__bulk[hidden] {
+  display: none;
+}
+
+.import-review__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.import-review__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 6px 8px;
+  border: 1px solid rgb(206 229 255 / 16%);
+  border-radius: 6px;
+  background: rgb(14 20 32 / 70%);
+}
+
+.import-review__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-review__tag {
+  justify-self: end;
+  font-size: 11px;
+  color: rgb(232 255 248 / 62%);
+}
+
+.import-review__row--conflict .import-review__tag {
+  color: #ffd689;
+}
+
+.import-review__choice.hud__select {
+  max-width: 170px;
+}
+
+.import-review__row .import-review__choice {
+  grid-column: 1;
+}
+
+.import-review__outcome {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: rgb(232 255 248 / 70%);
+  overflow-wrap: anywhere;
+}
+
+.import-review__row--new .import-review__outcome {
+  grid-column: 1 / -1;
+}
+
+.import-review__message--blocked {
+  color: #ffb4c0;
+}
+
+.import-review__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

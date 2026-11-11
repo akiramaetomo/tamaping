@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { effectivePresetMessageText } from '../.test-build/app/messageFormation.js';
+import { DEFAULT_PRESET_START } from '../.test-build/sim/presetStart.js';
 import {
   designViewportForPresetValue,
-  initialFormationForPresetValue,
+  presetStartForValue,
   presetEditOutcome,
   presetExportFilename,
   presetExportName,
@@ -71,20 +72,19 @@ test('design viewport comes only from user presets that recorded one', () => {
   );
 });
 
-test('initial formation applies only to factory presets that define one', () => {
-  const withFormation = FACTORY_PRESETS.find((preset) => preset.initialFormation);
-  assert.ok(withFormation, 'expected at least one factory preset with an initial formation');
-  assert.equal(
-    initialFormationForPresetValue(`factory:${withFormation.id}`),
-    withFormation.initialFormation,
-  );
+test('preset start comes from factory and user presets, with the default otherwise', () => {
+  const spiral = FACTORY_PRESETS.find((preset) => preset.start.formation === 'spiral');
+  assert.deepEqual(presetStartForValue(`factory:${spiral.id}`, []), spiral.start);
 
-  const withoutFormation = FACTORY_PRESETS.find((preset) => !preset.initialFormation);
-  if (withoutFormation) {
-    assert.equal(initialFormationForPresetValue(`factory:${withoutFormation.id}`), null);
-  }
-  assert.equal(initialFormationForPresetValue('user:1'), null);
-  assert.equal(initialFormationForPresetValue('custom'), null);
+  const userStart = { formation: 'name', ballX: 10, ballY: 90, ballSpeed: 400, particleSpeed: 0 };
+  const users = [
+    { name: 'With start', start: userStart, settings: FACTORY_PRESETS[0].settings },
+    { name: 'Old', settings: FACTORY_PRESETS[0].settings },
+  ];
+  assert.deepEqual(presetStartForValue('user:0', users), userStart);
+  assert.deepEqual(presetStartForValue('user:1', users), DEFAULT_PRESET_START);
+  assert.equal(presetStartForValue('user:2', users), null);
+  assert.equal(presetStartForValue('custom', users), null);
 });
 
 test('preset edit outcome returns to Applied, shows Modified, or falls back to Custom', () => {

@@ -8,21 +8,26 @@ import {
   type DotpingSettings,
   type ParticlePalette,
 } from './settings';
+import { FACTORY_PRESET_DEFINITION_DATA } from './factoryPresetData';
 import {
-  FACTORY_PRESET_DEFINITION_DATA,
-  type FactoryPresetInitialFormation,
-} from './factoryPresetData';
+  normalizePresetStart,
+  startFromInitialFormation,
+  type PresetStart,
+} from './presetStart';
 import { normalizeDesignViewport, type Viewport } from './viewScale';
 
-export type { FactoryPresetInitialFormation } from './factoryPresetData';
-
 export const FACTORY_PRESET_COUNT = 30;
-export const USER_PRESET_COUNT = 30;
-export const PRESET_EXPORT_SCHEMA_VERSION = 12;
+export const USER_PRESET_COUNT = 60;
+export const PRESET_EXPORT_SCHEMA_VERSION = 14;
+export const PRESET_NAME_MAX_LENGTH = 40;
 export const AUTOSAVE_WORKING_PRESET_NAME = 'Autosave working';
 export const PRESET_MY_PANEL_MAX_ITEMS = 10;
 
-const USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v1';
+// v2 holds 60 slots. v1 is the 30-slot key of 0.2.7 and earlier: it is read
+// once to fill v2 and never written again, so an old tab left open after an
+// update cannot cut the list, and v1 stays as a copy from before the update.
+export const USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v2';
+export const LEGACY_USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v1';
 const EXPORT_KIND = 'dotping-presets';
 const BALL_PALETTES: readonly BallPalette[] = [
   'black',
@@ -152,7 +157,8 @@ export type FactoryPreset = {
   id: string;
   name: string;
   formationLabel?: string;
-  initialFormation?: FactoryPresetInitialFormation;
+  // What the preset shows at its first moment.
+  start: PresetStart;
   settings: PresetSettings;
 };
 
@@ -162,6 +168,9 @@ export type UserPreset = {
   // Screen the preset was tuned on (world size at save). Missing means the
   // default phone design screen. Not part of the Modified comparison.
   designViewport?: Viewport;
+  // Start state. Missing means the default start. Not part of the Modified
+  // comparison either: it is metadata, like `formationLabel`.
+  start?: PresetStart;
   settings: PresetSettings;
 };
 
@@ -181,14 +190,14 @@ function factoryPreset(
   id: number,
   name: string,
   formationLabel: string | null,
-  initialFormation: FactoryPresetInitialFormation | null,
+  start: PresetStart,
   settings: Partial<PresetSettings>,
 ): FactoryPreset {
   return {
     id: `factory-${id}`,
     name,
     ...(formationLabel ? { formationLabel } : {}),
-    ...(initialFormation ? { initialFormation } : {}),
+    start,
     settings: {
       ...DEFAULT_PRESET,
       ...settings,
@@ -202,7 +211,7 @@ const FACTORY_PRESET_DEFINITIONS: FactoryPreset[] = FACTORY_PRESET_DEFINITION_DA
     index + 1,
     preset.name,
     preset.formationLabel ?? null,
-    preset.initialFormation ?? null,
+    startFromInitialFormation(preset.initialFormation),
     preset.settings,
   ),
 );
@@ -283,23 +292,31 @@ export function presetFromSettings(
   };
 }
 
-export function loadUserPresets(): Array<UserPreset | null> {
+export type PresetStorage = Pick<Storage, 'getItem' | 'setItem'>;
+
+export function loadUserPresets(storage: PresetStorage | null = browserStorage()): Array<UserPreset | null> {
   const empty = emptyUserPresetSlots();
-  const raw = readUserPresetStorage();
-  if (!raw) {
+  const raw = readStorage(storage, USER_PRESET_STORAGE_KEY);
+  const migrating = raw === null;
+  const source = migrating ? readStorage(storage, LEGACY_USER_PRESET_STORAGE_KEY) : raw;
+  if (!source) {
     return empty;
   }
 
+  let presets = empty;
   try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return empty;
+    const parsed = JSON.parse(source);
+    if (Array.isArray(parsed)) {
+      presets = empty.map((_, index) => normalizeUserPreset(parsed[index], index));
     }
-
-    return empty.map((_, index) => normalizeUserPreset(parsed[index]));
   } catch {
     return empty;
   }
+
+  if (migrating) {
+    writeUserPresetStorage(presets, storage);
+  }
+  return presets;
 }
 
 export function saveUserPreset(
@@ -309,6 +326,7 @@ export function saveUserPreset(
   settings: PresetSettings,
   formationLabel?: string | null,
   designViewport?: Viewport | null,
+  start?: PresetStart | null,
 ) {
   const next = copyUserPresetSlots(presets);
   const label = sanitizeFormationLabel(formationLabel);
@@ -317,6 +335,7 @@ export function saveUserPreset(
     name: sanitizePresetName(name, index),
     ...(label ? { formationLabel: label } : {}),
     ...(design ? { designViewport: design } : {}),
+    ...startField(start),
     settings: normalizePresetSettings(settings),
   };
   writeUserPresetStorage(next);
@@ -333,41 +352,6 @@ export function deleteUserPreset(
   return next;
 }
 
-export function importUserPresets(
-  current: Array<UserPreset | null>,
-  incoming: UserPreset[],
-  overwriteStartIndex: number | null,
-) {
-  const next = copyUserPresetSlots(current);
-  let imported = 0;
-  let overwriteOffset = 0;
-
-  for (const preset of incoming) {
-    const emptySlot = firstEmptySlot(next);
-    const target = emptySlot ?? nextOverwriteSlot(overwriteStartIndex, overwriteOffset);
-    if (target === null || target >= USER_PRESET_COUNT) {
-      break;
-    }
-
-    if (emptySlot === null) {
-      overwriteOffset += 1;
-    }
-
-    const formationLabel = sanitizeFormationLabel(preset.formationLabel);
-    const design = normalizeDesignViewport(preset.designViewport);
-    next[target] = {
-      name: sanitizePresetName(preset.name, target),
-      ...(formationLabel ? { formationLabel } : {}),
-      ...(design ? { designViewport: design } : {}),
-      settings: normalizePresetSettings(preset.settings),
-    };
-    imported += 1;
-  }
-
-  writeUserPresetStorage(next);
-  return { presets: next, imported };
-}
-
 export function parsePresetExport(jsonText: string): UserPreset[] {
   const parsed = JSON.parse(jsonText);
   const sourcePresets = Array.isArray(parsed)
@@ -381,6 +365,30 @@ export function parsePresetExport(jsonText: string): UserPreset[] {
     .filter((preset): preset is UserPreset => Boolean(preset));
 }
 
+// Import keeps the work in progress of an `Auto Backup` file apart, so it can
+// be offered separately instead of being added like a saved preset.
+export function parsePresetImportFile(jsonText: string): {
+  presets: UserPreset[];
+  working: UserPreset | null;
+} {
+  const parsed = JSON.parse(jsonText);
+  const sourcePresets = Array.isArray(parsed)
+    ? parsed
+    : isPresetExportLike(parsed)
+      ? parsed.presets
+      : [];
+  const working = !Array.isArray(parsed) && isPresetExportLike(parsed) && parsed.working
+    ? normalizeUserPreset(parsed.working, sourcePresets.length)
+    : null;
+
+  return {
+    presets: sourcePresets
+      .map((preset, index) => normalizeUserPreset(preset, index))
+      .filter((preset): preset is UserPreset => Boolean(preset)),
+    working,
+  };
+}
+
 export function createCurrentPresetExport(
   name: string,
   settings: DotpingSettings,
@@ -388,6 +396,7 @@ export function createCurrentPresetExport(
   formationLabel?: string | null,
   designViewport?: Viewport | null,
   myPanelItems?: readonly string[],
+  start?: PresetStart | null,
 ): PresetExportFile {
   const label = sanitizeFormationLabel(formationLabel);
   const design = normalizeDesignViewport(designViewport);
@@ -396,6 +405,7 @@ export function createCurrentPresetExport(
       name: name.trim() || 'Current',
       ...(label ? { formationLabel: label } : {}),
       ...(design ? { designViewport: design } : {}),
+      ...startField(start),
       settings: presetFromSettings(settings, pinnedGroup, myPanelItems),
     },
   ]);
@@ -415,6 +425,7 @@ export function createAutosaveExport(
   settings: PresetSettings,
   formationLabel?: string | null,
   designViewport?: Viewport | null,
+  start?: PresetStart | null,
 ): PresetExportFile {
   const label = sanitizeFormationLabel(formationLabel);
   const design = normalizeDesignViewport(designViewport);
@@ -427,6 +438,7 @@ export function createAutosaveExport(
       name: AUTOSAVE_WORKING_PRESET_NAME,
       ...(label ? { formationLabel: label } : {}),
       ...(design ? { designViewport: design } : {}),
+      ...startField(start),
       settings: normalizePresetSettings(settings),
     },
   };
@@ -448,26 +460,45 @@ function createPresetExport(
         name: sanitizePresetName(preset.name, index),
         ...(formationLabel ? { formationLabel } : {}),
         ...(design ? { designViewport: design } : {}),
+        ...startField(preset.start),
         settings: normalizePresetSettings(preset.settings),
       };
     }),
   };
 }
 
-function readUserPresetStorage() {
+function browserStorage(): PresetStorage | null {
   try {
-    return window.localStorage.getItem(USER_PRESET_STORAGE_KEY);
+    return window.localStorage;
   } catch {
     return null;
   }
 }
 
-function writeUserPresetStorage(presets: Array<UserPreset | null>) {
+function readStorage(storage: PresetStorage | null, key: string) {
   try {
-    window.localStorage.setItem(USER_PRESET_STORAGE_KEY, JSON.stringify(presets));
+    return storage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeUserPresetStorage(
+  presets: Array<UserPreset | null>,
+  storage: PresetStorage | null = browserStorage(),
+) {
+  try {
+    storage?.setItem(USER_PRESET_STORAGE_KEY, JSON.stringify(presets));
   } catch {
     // Keep in-memory presets for the current session even if storage fails.
   }
+}
+
+// Writes a whole slot list, as an import does after its review.
+export function storeUserPresets(presets: Array<UserPreset | null>) {
+  const next = copyUserPresetSlots(presets);
+  writeUserPresetStorage(next);
+  return next;
 }
 
 function emptyUserPresetSlots(): Array<UserPreset | null> {
@@ -482,19 +513,7 @@ function copyUserPresetSlots(presets: Array<UserPreset | null>) {
   return next;
 }
 
-function firstEmptySlot(presets: Array<UserPreset | null>) {
-  const index = presets.findIndex((preset) => preset === null);
-  return index >= 0 ? index : null;
-}
-
-function nextOverwriteSlot(start: number | null, offset: number) {
-  if (start === null) {
-    return null;
-  }
-  return start + offset;
-}
-
-function normalizeUserPreset(value: unknown, index = 0): UserPreset | null {
+export function normalizeUserPreset(value: unknown, index = 0): UserPreset | null {
   if (!value || typeof value !== 'object') {
     return null;
   }
@@ -511,8 +530,15 @@ function normalizeUserPreset(value: unknown, index = 0): UserPreset | null {
     name: sanitizePresetName(candidate.name, index),
     ...(formationLabel ? { formationLabel } : {}),
     ...(design ? { designViewport: design } : {}),
+    ...startField(candidate.start),
     settings,
   };
+}
+
+// A start is stored only when present, so older presets keep reading as the
+// default start.
+function startField(start: unknown): { start?: PresetStart } {
+  return start && typeof start === 'object' ? { start: normalizePresetStart(start) } : {};
 }
 
 export function normalizePresetSettings(value: unknown): PresetSettings {
@@ -778,13 +804,13 @@ function myPanelItemsValue(values: readonly unknown[]) {
   return items;
 }
 
-function sanitizePresetName(name: unknown, index: number) {
+export function sanitizePresetName(name: unknown, index: number) {
   if (typeof name !== 'string') {
     return `User ${index + 1}`;
   }
 
   const trimmed = name.trim();
-  return trimmed ? trimmed.slice(0, 40) : `User ${index + 1}`;
+  return trimmed ? trimmed.slice(0, PRESET_NAME_MAX_LENGTH) : `User ${index + 1}`;
 }
 
 function sanitizeFormationLabel(label: unknown) {

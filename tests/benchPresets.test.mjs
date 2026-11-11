@@ -10,12 +10,13 @@ import {
 } from '../.test-build/sim/benchPresets.js';
 import {
   designViewportForPresetValue,
-  initialFormationForPresetValue,
+  presetStartForValue,
   presetExportName,
   presetSettingsForValue,
 } from '../.test-build/app/presetValues.js';
 import { presetBrowseOrder } from '../.test-build/app/frontPresetBar.js';
 import { FACTORY_PRESETS } from '../.test-build/sim/presets.js';
+import { DEFAULT_PRESET_START } from '../.test-build/sim/presetStart.js';
 
 const byId = (id) => BENCH_PRESETS.find((preset) => preset.id === id);
 
@@ -64,7 +65,7 @@ test('bench select values resolve settings, name and the fixed design screen', (
   assert.equal(presetExportName(value, []), '⏱ B Physics gathered');
   assert.deepEqual(designViewportForPresetValue(value, []), BENCH_DESIGN_VIEWPORT);
   assert.deepEqual(BENCH_DESIGN_VIEWPORT, { width: 360, height: 800 });
-  assert.equal(initialFormationForPresetValue(value), null);
+  assert.deepEqual(presetStartForValue(value, []), DEFAULT_PRESET_START);
 });
 
 test('bench query parameter accepts known ids case-insensitively', () => {

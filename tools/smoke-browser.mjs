@@ -506,21 +506,16 @@ async function runWorkProtection(page, url) {
   check('Details: Save and apply restore every value', sameValues(tuned, await page.evaluate(DETAILS_READ)));
 
   // Export file read back through Import, into a browser with no presets.
-  const exported = await page.evaluate(`localStorage.getItem('dotping.userPresets.v1')`);
+  const exported = await page.evaluate(`localStorage.getItem('dotping.userPresets.v2')`);
   await sleep(800);
   await page.evaluate(`localStorage.clear()`);
   await loadApp(page, url, DESKTOP);
   const importFile = JSON.stringify({ kind: 'dotping-presets', presets: JSON.parse(exported).filter(Boolean) });
-  const imported = await page.evaluate(`(async () => {
-    const input = document.querySelector('.hud__preset input[type="file"]');
-    const transfer = new DataTransfer();
-    transfer.items.add(new File([${JSON.stringify(importFile)}], 'import.json', { type: 'application/json' }));
-    input.files = transfer.files;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return document.querySelector('.hud__preset-status').textContent;
-  })()`);
-  check('Details: the exported file imports', imported === 'Imported 1', imported);
+  await importThroughInput(page, importFile);
+  await page.evaluate(`document.querySelector('.import-review__confirm').click()`);
+  await sleep(100);
+  const imported = await page.evaluate(PRESET_STATUS);
+  check('Details: the exported file imports', imported === 'Added 1 · Overwrote 0 · Skipped 0', imported);
   await page.evaluate(selectPreset('user:0'));
   await sleep(100);
   check('Details: Export and Import restore every value', sameValues(tuned, await page.evaluate(DETAILS_READ)));
@@ -566,7 +561,7 @@ async function runWorkProtection(page, url) {
 const MY_PANEL_ROWS = `[...document.querySelectorAll('.hud__my-items .hud__pick')]
   .map((pick) => pick.dataset.label)`;
 const OWN_MY_PANEL = `localStorage.getItem('dotping.myPanel.v1')`;
-const SAVED_PRESET_ROWS = `JSON.parse(localStorage.getItem('dotping.userPresets.v1'))[0].settings.myPanelItems`;
+const SAVED_PRESET_ROWS = `JSON.parse(localStorage.getItem('dotping.userPresets.v2'))[0].settings.myPanelItems`;
 
 // A preset's rows against the browser's own list, driven through the real UI.
 async function runPresetMyPanel(page, url) {
@@ -699,6 +694,228 @@ const READ_BACKUP_FILE = `(async () => {
   return (await handle.getFile()).text();
 })()`;
 
+// The file exists only once the app has called the picker and written to it,
+// which can take longer than a fixed wait on a busy machine. Reading too early
+// throws NotFoundError (see docs/troubleshooting.md).
+async function readBackupFileWhenWritten(page, timeoutMs = 3000) {
+  const startedAt = Date.now();
+  for (;;) {
+    try {
+      const text = await page.evaluate(READ_BACKUP_FILE);
+      if (text) {
+        return text;
+      }
+    } catch (error) {
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw error;
+      }
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      return '';
+    }
+    await sleep(100);
+  }
+}
+
+// The Start block in the Preset card and the front bar's Restart button.
+// Hands a file to the Preset card's Import input, as the file picker would.
+async function importThroughInput(page, fileText, fileName = 'import.json') {
+  await page.evaluate(`(async () => {
+    const input = document.querySelector('.hud__preset input[type="file"]');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([${JSON.stringify(fileText)}], ${JSON.stringify(fileName)}, { type: 'application/json' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  })()`);
+}
+
+const SAVED_NAMES = `(JSON.parse(localStorage.getItem('dotping.userPresets.v2')) ?? []).map((preset) => preset?.name ?? null)`;
+
+function smokePreset(name, particleCount) {
+  return { name, settings: { particleCount } };
+}
+
+async function seedPresets(page, url, viewport, presets, key = 'dotping.userPresets.v2') {
+  await page.evaluate(`(() => {
+    localStorage.clear();
+    localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(JSON.stringify(presets))});
+  })()`);
+  await loadApp(page, url, viewport);
+}
+
+// Round 16: Import skips what is saved, asks about same names, and the
+// preset lists hold 60 slots.
+async function runImportMerge(page, url) {
+  // The 30-slot key of 0.2.7 fills the new key once and stays as it was.
+  const legacy = JSON.stringify([smokePreset('Old work', 120)]);
+  await seedPresets(page, url, DESKTOP, [smokePreset('Old work', 120)], 'dotping.userPresets.v1');
+  const migrated = await page.evaluate(`({
+    names: ${SAVED_NAMES},
+    legacy: localStorage.getItem('dotping.userPresets.v1'),
+  })`);
+  check('import merge: the old 30-slot key fills the 60-slot key and is left as it was',
+    migrated.names.length === 60 && migrated.names[0] === 'Old work' && migrated.legacy === legacy,
+    `${migrated.names.length} slots`);
+
+  for (const [label, viewport] of [['1280px', DESKTOP], ['360px', PHONE]]) {
+    const saved = [smokePreset('Wave', 100), smokePreset('Rain', 200)];
+    await seedPresets(page, url, viewport, saved);
+    const savedFile = JSON.stringify({ kind: 'dotping-presets', presets: saved });
+
+    await importThroughInput(page, savedFile);
+    const again = await page.evaluate(`({
+      status: document.querySelector('.hud__preset-status').textContent,
+      panel: Boolean(document.querySelector('.import-review')),
+    })`);
+    check(`import merge ${label}: reading saved presets again adds nothing and opens no panel`,
+      again.status === 'Nothing new (2 already saved)' && !again.panel, again.status);
+
+    const backup = JSON.stringify({
+      kind: 'dotping-presets',
+      source: 'autosave',
+      presets: [smokePreset('Wave', 999), smokePreset('Rain', 200), smokePreset('Snow', 300)],
+      working: smokePreset('Autosave working', 400),
+    });
+    await importThroughInput(page, backup, 'dotping-autosave.json');
+    const panel = await page.evaluate(`(() => {
+      const dialog = document.querySelector('.import-review');
+      if (!dialog) return null;
+      const r = dialog.getBoundingClientRect();
+      const rows = [...dialog.querySelectorAll('.import-review__row')].map((row) => ({
+        kind: row.dataset.kind,
+        choice: row.querySelector('select')?.value ?? null,
+        outcome: row.querySelector('.import-review__outcome').textContent,
+      }));
+      return {
+        open: dialog.open,
+        summary: dialog.querySelector('.import-review__summary').textContent,
+        rows,
+        left: r.left,
+        right: r.right,
+        sideScroll: dialog.scrollWidth > dialog.clientWidth,
+        pageScroll: document.documentElement.scrollWidth,
+      };
+    })()`);
+    check(`import merge ${label}: the review panel opens with the file's summary`,
+      Boolean(panel?.open) && panel.summary === '1 new · 1 already saved · 1 same name, different · work in progress',
+      panel?.summary);
+    check(`import merge ${label}: same name defaults to a new name, work in progress to Skip`,
+      JSON.stringify(panel?.rows.map((row) => [row.kind, row.choice])) === JSON.stringify([
+        ['conflict', 'add'], ['new', null], ['working', 'skip'],
+      ]) && panel.rows[0].outcome === '→ U03: Wave (2)',
+      JSON.stringify(panel?.rows));
+    check(`import merge ${label}: the review panel fits the screen`,
+      Boolean(panel) && panel.left >= 0 && panel.right <= viewport.width + 1
+        && !panel.sideScroll && panel.pageScroll <= viewport.width,
+      panel ? `${Math.round(panel.left)}-${Math.round(panel.right)}` : 'none');
+
+    await click(page, '.import-review__confirm');
+    await sleep(100);
+    const after = await page.evaluate(`({
+      status: document.querySelector('.hud__preset-status').textContent,
+      names: ${SAVED_NAMES}.slice(0, 5),
+      panel: Boolean(document.querySelector('.import-review')),
+    })`);
+    check(`import merge ${label}: Import adds the new and renamed presets only`,
+      after.status === 'Added 2 · Overwrote 0 · Skipped 2' && !after.panel
+        && JSON.stringify(after.names) === JSON.stringify(['Wave', 'Rain', 'Wave (2)', 'Snow', null]),
+      `${after.status} ${JSON.stringify(after.names)}`);
+
+    const lists = await page.evaluate(`(() => {
+      const users = (select) => [...select.querySelectorAll('option')].filter((option) => option.value.startsWith('user:'));
+      return {
+        front: users(document.querySelector('.front-preset-bar__select')).map((option) => option.textContent),
+        settings: users(document.querySelector('.hud__preset-select')).length,
+        saveTo: document.querySelectorAll('.hud__preset-save-select option').length,
+      };
+    })()`);
+    check(`import merge ${label}: the front bar lists saved slots only, with their numbers`,
+      JSON.stringify(lists.front) === JSON.stringify(['U01: Wave', 'U02: Rain', 'U03: Wave (2)', 'U04: Snow']),
+      JSON.stringify(lists.front));
+    check(`import merge ${label}: Settings and Save to list all 60 slots`,
+      lists.settings === 60 && lists.saveTo === 61, `${lists.settings} / ${lists.saveTo}`);
+  }
+
+  // A full list refuses to add, and Cancel writes nothing.
+  const full = Array.from({ length: 60 }, (_, index) => smokePreset(`P${index + 1}`, index + 1));
+  await seedPresets(page, url, PHONE, full);
+  await importThroughInput(page, JSON.stringify([smokePreset('One more', 5000)]));
+  const blocked = await page.evaluate(`({
+    message: document.querySelector('.import-review__message')?.textContent ?? '',
+    disabled: document.querySelector('.import-review__confirm')?.disabled ?? null,
+  })`);
+  check('import merge: a full list disables Import and says how many slots are missing',
+    blocked.message === 'Needs 1 more slot' && blocked.disabled === true, blocked.message);
+  await click(page, '.import-review__cancel');
+  await sleep(100);
+  const cancelled = await page.evaluate(`({
+    status: document.querySelector('.hud__preset-status').textContent,
+    names: ${SAVED_NAMES},
+  })`);
+  check('import merge: Cancel writes nothing',
+    cancelled.status === 'Import cancelled' && cancelled.names[59] === 'P60' && !cancelled.names.includes('One more'),
+    cancelled.status);
+  await page.evaluate(`localStorage.clear()`);
+}
+
+async function runPresetStart(page, url) {
+  for (const [label, viewport] of [['1280px', DESKTOP], ['360px', PHONE]]) {
+    await loadApp(page, url, viewport);
+    const bar = await page.evaluate(`(() => {
+      const r = (selector) => document.querySelector(selector)?.getBoundingClientRect() ?? null;
+      const restart = r('.front-preset-bar__restart');
+      return {
+        restart: restart && { left: restart.left, right: restart.right },
+        bar: r('.front-preset-bar')?.right ?? null,
+        name: r('.front-preset-bar__name')?.width ?? 0,
+      };
+    })()`);
+    check(`preset start ${label}: Restart sits in the front bar`,
+      Boolean(bar.restart && bar.restart.right <= bar.bar + 1), JSON.stringify(bar));
+    check(`preset start ${label}: the preset name keeps room`, bar.name >= 100, `${Math.round(bar.name)}px`);
+
+    await click(page, '.settings-button');
+    await page.evaluate(`document.querySelector('.hud__tab[data-tab="preset"]').click()`);
+    await sleep(100);
+    const block = await page.evaluate(`(() => {
+      const block = document.querySelector('.hud__preset-start');
+      const panel = document.getElementById('settings-panel');
+      if (!block) return null;
+      return {
+        right: block.getBoundingClientRect().right,
+        rows: [...block.querySelectorAll('.hud__control > span:first-child')].map((span) => span.textContent),
+        sideScroll: panel.scrollWidth > panel.clientWidth,
+      };
+    })()`);
+    check(`preset start ${label}: the Start block fits the panel`,
+      Boolean(block && block.right <= viewport.width + 1 && !block.sideScroll), JSON.stringify(block));
+    check(`preset start ${label}: the Start block has its five rows`,
+      JSON.stringify(block?.rows) === JSON.stringify(['Formation', 'Ball X', 'Ball Y', 'Ball speed', 'Particle speed']),
+      JSON.stringify(block?.rows));
+  }
+
+  await page.evaluate(`(() => {
+    const select = document.querySelector('.hud__preset-start select');
+    select.value = 'spiral';
+    select.dispatchEvent(new Event('change'));
+  })()`);
+  check('preset start: changing a Start value replays the start',
+    (await page.evaluate(PRESET_STATUS)) === 'Start replayed', await page.evaluate(PRESET_STATUS));
+  await click(page, '.hud__close');
+  await click(page, '.front-preset-bar__restart');
+  check('preset start: Restart replays the start', (await page.evaluate(PRESET_STATUS)) === 'Restarted',
+    await page.evaluate(PRESET_STATUS));
+  await click(page, '.front-preset-bar__step[aria-label="Next preset"]');
+  const applied = await page.evaluate(`({
+    status: document.querySelector('.hud__preset-status')?.textContent ?? '',
+    formation: document.querySelector('.hud__preset-start select')?.value ?? '',
+  })`);
+  check('preset start: applying a factory preset fills the Start block',
+    applied.status === 'Applied' && applied.formation === 'name', JSON.stringify(applied));
+  await page.evaluate(`localStorage.clear()`);
+}
+
 async function runAutoBackup(page, url) {
   const { identifier } = await page.send('Page.addScriptToEvaluateOnNewDocument', { source: FAKE_PICKER });
   try {
@@ -729,8 +946,7 @@ async function runAutoBackup(page, url) {
     await sleep(100);
     await page.evaluate(`document.querySelector('.hud__preset-backup-action').scrollIntoView({ block: 'center' })`);
     await click(page, '.hud__preset-backup-action');
-    await sleep(300);
-    const first = JSON.parse(await page.evaluate(READ_BACKUP_FILE));
+    const first = JSON.parse(await readBackupFileWhenWritten(page));
     check('Auto Backup: choosing a file writes it at once',
       first.source === 'autosave' && Boolean(first.working?.settings), first.source);
     check('Auto Backup: the row shows the write and offers Stop',
@@ -809,6 +1025,8 @@ async function main() {
     await runSettingsCards(page, url);
     await runWorkProtection(page, url);
     await runPresetMyPanel(page, url);
+    await runImportMerge(page, url);
+    await runPresetStart(page, url);
     await runAutoBackup(page, url);
 
     await loadApp(page, `${url}?debug=1`, DESKTOP);

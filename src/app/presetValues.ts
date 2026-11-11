@@ -1,9 +1,9 @@
 import {
   FACTORY_PRESETS,
-  type FactoryPresetInitialFormation,
   type PresetSettings,
   type UserPreset,
 } from '../sim/presets';
+import { DEFAULT_PRESET_START, type PresetStart } from '../sim/presetStart';
 import { BENCH_DESIGN_VIEWPORT, benchPresetForValue } from '../sim/benchPresets';
 import { DEFAULT_DESIGN_VIEWPORT, type Viewport } from '../sim/viewScale';
 import { effectivePresetMessageText } from './messageFormation';
@@ -81,8 +81,17 @@ export function designViewportForPresetValue(
   return userPresetFor(value, userPresets)?.designViewport ?? DEFAULT_DESIGN_VIEWPORT;
 }
 
-export function initialFormationForPresetValue(value: string): FactoryPresetInitialFormation | null {
-  return factoryPresetFor(value)?.initialFormation ?? null;
+// The start a preset shows at its first moment. Bench presets and presets
+// without a stored start use the default; `null` when no preset matches.
+export function presetStartForValue(
+  value: string,
+  userPresets: UserPresetSlots,
+): PresetStart | null {
+  const preset = factoryPresetFor(value) ?? userPresetFor(value, userPresets) ?? benchPresetForValue(value);
+  if (!preset) {
+    return null;
+  }
+  return { ...('start' in preset && preset.start ? preset.start : DEFAULT_PRESET_START) };
 }
 
 export function presetSettingsEqual(a: PresetSettings, b: PresetSettings) {

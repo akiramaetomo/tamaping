@@ -58,6 +58,7 @@ export function saveFrontPresetBarVisible(visible: boolean) {
 type FrontPresetBarCallbacks = {
   onPresetChange(value: string): void;
   onStep(step: PresetStep): void;
+  onRestart(): void;
 };
 
 export class FrontPresetBar {
@@ -93,7 +94,13 @@ export class FrontPresetBar {
     name.className = 'front-preset-bar__name';
     name.append(this.select);
 
-    bar.append(previous, name, next);
+    // Replays how the current work begins, without changing any setting.
+    const restart = createBarButton('front-preset-bar__restart', '↺', 'Restart');
+    restart.addEventListener('click', () => {
+      callbacks.onRestart();
+    });
+
+    bar.append(previous, name, next, restart);
     this.element = bar;
   }
 
@@ -104,7 +111,7 @@ export class FrontPresetBar {
   // Refills the options only when the preset list changed.
   sync(activeValue: string, userPresets: Array<UserPreset | null>, optionsVersion: number) {
     if (this.optionsVersion !== optionsVersion) {
-      fillPresetOptions(this.select, userPresets);
+      fillPresetOptions(this.select, userPresets, [], { hideEmptyUserSlots: true });
       this.optionsVersion = optionsVersion;
     }
     syncPresetSelectValue(this.select, activeValue);

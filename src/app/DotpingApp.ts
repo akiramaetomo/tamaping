@@ -25,16 +25,23 @@ import {
   createCurrentPresetExport,
   createUserPresetExport,
   deleteUserPreset,
-  importUserPresets,
   loadUserPresets,
-  parsePresetExport,
+  parsePresetImportFile,
   presetFromSettings,
   saveUserPreset,
-  type FactoryPresetInitialFormation,
+  storeUserPresets,
   type PresetPinnedGroup,
   type PresetSettings,
   type UserPreset,
 } from '../sim/presets';
+import { DEFAULT_PRESET_START, type PresetStart } from '../sim/presetStart';
+import { planPresetImport } from '../sim/presetImport';
+import {
+  importNeedsReview,
+  importStatusText,
+  openImportReview,
+} from './importReview';
+import { StartControls } from './startControls';
 import {
   DEFAULT_DESIGN_VIEWPORT,
   computeViewScale,
@@ -119,7 +126,7 @@ import {
 import { PresetPanel, fillPresetOptions, syncPresetSelectValue } from './presetPanel';
 import {
   designViewportForPresetValue,
-  initialFormationForPresetValue,
+  presetStartForValue,
   presetEditOutcome,
   presetExportFilename,
   presetExportName,
@@ -265,6 +272,10 @@ export class DotpingApp {
   private viewScaleButton: HTMLButtonElement | null = null;
   private viewScaleMode: ViewScaleMode = 'fit';
   private designViewport: Viewport = DEFAULT_DESIGN_VIEWPORT;
+  // How the current work begins. Applying a preset sets it; the Start block
+  // edits it; Save, Restart, Reset, exports and the work in progress read it.
+  private presetStart: PresetStart = { ...DEFAULT_PRESET_START };
+  private startControls: StartControls | null = null;
   private view: ViewScale = computeViewScale({ width: 1, height: 1 }, DEFAULT_DESIGN_VIEWPORT, '1:1');
   private presetPanel: PresetPanel | null = null;
   private frontPresetBar: FrontPresetBar | null = null;
@@ -396,6 +407,8 @@ export class DotpingApp {
   }
 
   private finishWorkingStateRestore(restored: WorkingState) {
+    // Restored, not replayed: the reload keeps the scene a fresh build gives.
+    this.setPresetStart(restored.start);
     this.showPresetMyPanel(restored.settings.myPanelItems);
     this.setPinnedGroup(restored.settings.pinnedGroup ?? null, false);
     this.lastAppliedPresetValue = restored.lastAppliedValue;
@@ -437,6 +450,7 @@ export class DotpingApp {
         presetFromSettings(this.settings, this.activePinnedGroupId, this.shownMyPanel.items),
         presetFormationLabel(this.activePresetValue, this.userPresets),
         this.worldViewport(),
+        this.presetStart,
       ),
       (status, savedAt) => this.presetPanel?.setBackupRow(fileBackupRowView(status, savedAt)),
     );
@@ -480,6 +494,7 @@ export class DotpingApp {
       snapshot: this.activePresetSnapshot,
       lastAppliedValue: this.lastAppliedPresetValue,
       designViewport: this.designViewport,
+      start: { ...this.presetStart },
     };
   }
 
@@ -576,7 +591,9 @@ export class DotpingApp {
     this.setPresetStatus('Scene paused - press Reset');
   }
 
-  private resetScene() {
+  // `applyStart` is off only for perf benches, which keep the plain fresh
+  // build so every run is measured from the same kind of layout.
+  private resetScene(applyStart = true) {
     const pointerId = this.pointer.pointerId;
     if (pointerId !== null && this.renderer?.canvas.hasPointerCapture(pointerId)) {
       this.renderer.canvas.releasePointerCapture(pointerId);
@@ -586,6 +603,9 @@ export class DotpingApp {
     const physics = this.requirePhysics();
     physics.reset();
     physics.setPointer(false, this.pointer.x, this.pointer.y);
+    if (applyStart) {
+      this.applyPresetStart();
+    }
     this.restartFrameLoop();
     this.setPresetStatus('Scene reset');
   }
@@ -1891,15 +1911,7 @@ export class DotpingApp {
       return false;
     }
 
-    const targets = createMessageFormationTargets({
-      text: presetMessageText(this.activePresetValue, this.userPresets),
-      particleCount: physics.particleCount,
-      particleRadius: this.settings.particleRadius,
-      worldWidth: this.view.worldWidth,
-      worldHeight: this.view.worldHeight,
-      mobile: window.matchMedia('(max-width: 760px)').matches,
-      settingsOpen: this.isSettingsPanelOpen(),
-    });
+    const targets = this.presetNameTargets(physics.particleCount);
     if (targets.length <= 0 || !physics.arrangeParticlesToTargets(targets)) {
       if (reportStatus) {
         this.setPresetStatus('Name unavailable');
@@ -1911,6 +1923,18 @@ export class DotpingApp {
       this.setPresetStatus('Name formed');
     }
     return true;
+  }
+
+  private presetNameTargets(particleCount: number) {
+    return createMessageFormationTargets({
+      text: presetMessageText(this.activePresetValue, this.userPresets),
+      particleCount,
+      particleRadius: this.settings.particleRadius,
+      worldWidth: this.view.worldWidth,
+      worldHeight: this.view.worldHeight,
+      mobile: window.matchMedia('(max-width: 760px)').matches,
+      settingsOpen: this.isSettingsPanelOpen(),
+    });
   }
 
   private syncParticleLoadValue() {
@@ -2147,6 +2171,13 @@ export class DotpingApp {
       this.frontPresetBarVisible,
       this.shownBenchPresets(),
     );
+    this.startControls = new StartControls(this.presetStart, (start) => {
+      this.presetStart = start;
+      this.scheduleWorkingStateSave();
+      this.applyPresetStart();
+      this.setPresetStatus('Start replayed');
+    });
+    this.presetPanel.attachStartControls(this.startControls.element);
     this.defineControl(this.presetSelectControl(this.presetPanel));
     return this.presetPanel.element;
   }
@@ -2158,6 +2189,10 @@ export class DotpingApp {
       },
       onStep: (step) => {
         this.stepPreset(step);
+      },
+      onRestart: () => {
+        this.applyPresetStart();
+        this.setPresetStatus('Restarted');
       },
     });
     bar.visible = this.frontPresetBarVisible;
@@ -2246,10 +2281,10 @@ export class DotpingApp {
 
     this.designViewport = designViewportForPresetValue(value, this.userPresets);
     this.applyViewScale();
-    this.applyPreset(preset, value, initialFormationForPresetValue(value));
+    this.applyPreset(preset, value, presetStartForValue(value, this.userPresets));
     if (benchPresetForValue(value)) {
       // A fresh scene, so every run starts from the same kind of layout.
-      this.resetScene();
+      this.resetScene(false);
       this.benchStartedAt = performance.now();
       this.setPresetStatus('Bench started');
     }
@@ -2258,7 +2293,7 @@ export class DotpingApp {
   private applyPreset(
     preset: PresetSettings,
     selectedValue: string,
-    initialFormation: FactoryPresetInitialFormation | null = null,
+    start: PresetStart | null = null,
   ) {
     const { pinnedGroup, myPanelItems, ...settings } = preset;
     this.updateSettings(settings, true, false);
@@ -2271,21 +2306,23 @@ export class DotpingApp {
     this.lastAppliedPresetValue = selectedValue;
     this.activePresetSnapshot = this.currentPresetSettings();
     this.syncPresetSelectSelection();
-    this.applyInitialPresetFormation(initialFormation);
+    this.setPresetStart(start ?? DEFAULT_PRESET_START);
+    this.applyPresetStart();
     this.setPresetStatus('Applied');
   }
 
-  private applyInitialPresetFormation(initialFormation: FactoryPresetInitialFormation | null) {
-    if (!initialFormation || initialFormation === 'random') {
-      return;
-    }
+  private setPresetStart(start: PresetStart) {
+    this.presetStart = { ...start };
+    this.startControls?.set(this.presetStart);
+  }
 
-    if (initialFormation === 'flash') {
-      this.requirePhysics().arrangeFlashParticles();
-      return;
-    }
-
-    this.arrangePresetNameParticles(false);
+  // Puts the scene in the current start state. Settings stay as they are.
+  private applyPresetStart() {
+    const physics = this.requirePhysics();
+    const nameTargets = this.presetStart.formation === 'name' && physics.particleCount > 0
+      ? this.presetNameTargets(physics.particleCount)
+      : null;
+    physics.applyStart(this.presetStart, nameTargets);
   }
 
   private saveCurrentPreset() {
@@ -2305,6 +2342,7 @@ export class DotpingApp {
       this.currentPresetSettings(),
       this.presetPanel?.formationLabel ?? '',
       this.worldViewport(),
+      this.presetStart,
     );
     this.designViewport = this.userPresets[index]?.designViewport ?? this.designViewport;
     this.syncViewScaleButton();
@@ -2349,6 +2387,7 @@ export class DotpingApp {
       presetFormationLabel(this.activePresetValue, this.userPresets),
       this.worldViewport(),
       this.shownMyPanel.items,
+      this.presetStart,
     );
     this.downloadPresetJson(exportFile, presetExportFilename('dotping-current-preset', new Date()));
     this.setPresetStatus('Exported current');
@@ -2366,47 +2405,44 @@ export class DotpingApp {
     this.setPresetStatus(`Exported ${savedCount}`);
   }
 
+  private importInProgress = false;
+
   private async importPresetFile(input: HTMLInputElement) {
     const file = input.files?.[0];
     input.value = '';
-    if (!file) {
+    if (!file || this.importInProgress) {
       return;
     }
 
+    this.importInProgress = true;
     try {
-      const incoming = parsePresetExport(await file.text());
-      if (incoming.length <= 0) {
+      const { presets: incoming, working } = parsePresetImportFile(await file.text());
+      if (incoming.length <= 0 && !working) {
         this.setPresetStatus('No presets found');
         return;
       }
 
-      const emptyCount = this.userPresets.filter((preset) => !preset).length;
-      const overwriteStart = this.importOverwriteStart(incoming.length, emptyCount);
-      if (incoming.length > emptyCount && overwriteStart === null) {
-        this.setPresetStatus('Select overwrite slot');
+      const plan = planPresetImport(this.userPresets, incoming, working);
+      if (!importNeedsReview(plan)) {
+        this.setPresetStatus(`Nothing new (${plan.counts.saved} already saved)`);
         return;
       }
 
-      const result = importUserPresets(this.userPresets, incoming, overwriteStart);
-      this.userPresets = result.presets;
+      const result = await openImportReview(this.root, file.name, this.userPresets, plan);
+      if (!result) {
+        this.setPresetStatus('Import cancelled');
+        return;
+      }
+
+      this.userPresets = storeUserPresets(result.presets);
       this.renderPresetOptions('custom');
       this.renderSaveDestinationOptions('');
-      this.setPresetStatus(`Imported ${result.imported}`);
+      this.setPresetStatus(importStatusText(result));
     } catch {
       this.setPresetStatus('Import failed');
+    } finally {
+      this.importInProgress = false;
     }
-  }
-
-  private importOverwriteStart(importCount: number, emptyCount: number) {
-    if (importCount <= emptyCount) {
-      return null;
-    }
-
-    const selected = this.presetPanel?.selectedUserPresetSlot() ?? null;
-    if (selected === null) {
-      return null;
-    }
-    return selected;
   }
 
   private downloadPresetJson(exportFile: unknown, filename: string) {

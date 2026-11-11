@@ -200,6 +200,11 @@ export class PresetPanel {
     return this.saveFormationLabelInput.value;
   }
 
+  // Places the Start block below `Name text`.
+  attachStartControls(element: HTMLElement) {
+    this.saveFormationLabelInput.after(element);
+  }
+
   selectedUserPresetSlot() {
     return selectedUserPresetSlot(this.saveSlotSelect);
   }
@@ -288,6 +293,8 @@ export function fillPresetOptions(
   select: HTMLSelectElement,
   userPresets: Array<UserPreset | null>,
   benchPresets: readonly BenchPreset[] = [],
+  // The front bar lists saved slots only; their numbers still show the gaps.
+  { hideEmptyUserSlots = false }: { hideEmptyUserSlots?: boolean } = {},
 ) {
   select.replaceChildren();
 
@@ -311,6 +318,9 @@ export function fillPresetOptions(
   userGroup.label = 'User Presets';
   for (let index = 0; index < USER_PRESET_COUNT; index += 1) {
     const preset = userPresets[index];
+    if (!preset && hideEmptyUserSlots) {
+      continue;
+    }
     const option = document.createElement('option');
     option.value = `user:${index}`;
     option.textContent = preset ? userSlotLabel(index, preset) : `${userSlotPrefix(index)} (empty)`;
