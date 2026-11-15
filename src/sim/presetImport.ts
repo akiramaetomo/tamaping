@@ -149,6 +149,37 @@ export function applyPresetImport(
   };
 }
 
+export type PresetReplaceResult = {
+  // False when the file holds more presets than there are slots.
+  ok: boolean;
+  // False when the slots already hold exactly the file's presets, in that order.
+  changes: boolean;
+  presets: Array<UserPreset | null>;
+  // Presets saved before, and presets taken from the file.
+  replaced: number;
+  added: number;
+};
+
+// `Replace all`: every slot is emptied and the file's presets fill the slots
+// from the first, in file order, exactly as they are. The work in progress of
+// an `Auto Backup` file is not used. Nothing is written here.
+export function applyPresetReplace(
+  current: ReadonlyArray<UserPreset | null>,
+  incoming: readonly UserPreset[],
+): PresetReplaceResult {
+  const presets: Array<UserPreset | null> = current.map((_, index) => incoming[index] ?? null);
+  const saved = current.filter((preset): preset is UserPreset => Boolean(preset));
+  const changes = saved.length !== incoming.length
+    || saved.some((preset, index) => presetIdentityKey(preset) !== presetIdentityKey(incoming[index]));
+  return {
+    ok: incoming.length <= current.length,
+    changes,
+    presets,
+    replaced: saved.length,
+    added: Math.min(incoming.length, current.length),
+  };
+}
+
 // `Wave` -> `Wave (2)`, `Wave (2)` -> `Wave (3)`. The part before ` (n)` is
 // shortened so the name keeps within the preset name limit.
 export function uniquePresetName(name: string, taken: ReadonlySet<string>) {

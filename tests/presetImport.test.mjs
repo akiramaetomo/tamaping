@@ -6,6 +6,8 @@ import {
   AUTOSAVE_WORKING_PRESET_NAME,
   LEGACY_USER_PRESET_STORAGE_KEY,
   PRESET_NAME_MAX_LENGTH,
+  STARTER_PRESETS_FLAG_KEY,
+  STARTER_USER_PRESETS,
   USER_PRESET_COUNT,
   USER_PRESET_STORAGE_KEY,
   createAutosaveExport,
@@ -16,6 +18,7 @@ import {
 } from '../.test-build/sim/presets.js';
 import {
   applyPresetImport,
+  applyPresetReplace,
   defaultImportChoices,
   planPresetImport,
   presetIdentityKey,
@@ -239,4 +242,109 @@ test('slots 31 to 60 are kept by storage', () => {
   list[59] = preset('Sixty', 60);
   const storage = fakeStorage({ [USER_PRESET_STORAGE_KEY]: JSON.stringify(list) });
   assert.equal(loadUserPresets(storage)[59].name, 'Sixty');
+});
+
+// Starter presets go in once per browser. The four cases of
+// docs/tech/testing-from-empty-browser-storage.md, plus unreadable data.
+test('first visit: starter presets fill U01 onwards and the flag is set', () => {
+  const storage = fakeStorage();
+  const loaded = loadUserPresets(storage);
+  assert.equal(loaded.length, USER_PRESET_COUNT);
+  assert.deepEqual(
+    loaded.slice(0, STARTER_USER_PRESETS.length).map((item) => item.name),
+    STARTER_USER_PRESETS.map((item) => item.name),
+  );
+  assert.equal(loaded[STARTER_USER_PRESETS.length], null);
+  assert.equal(storage.data.get(STARTER_PRESETS_FLAG_KEY), '1');
+  assert.deepEqual(JSON.parse(storage.data.get(USER_PRESET_STORAGE_KEY)), loaded);
+});
+
+test('second visit: the saved list is read and nothing is added', () => {
+  const storage = fakeStorage();
+  const first = loadUserPresets(storage);
+  const renamed = first.map((item, index) => (index === 0 ? { ...item, name: 'Changed' } : item));
+  storage.setItem(USER_PRESET_STORAGE_KEY, JSON.stringify(renamed));
+  const second = loadUserPresets(storage);
+  assert.equal(second[0].name, 'Changed');
+  assert.equal(second.filter(Boolean).length, STARTER_USER_PRESETS.length);
+});
+
+test('starter presets do not come back after the player deletes them all', () => {
+  const storage = fakeStorage({
+    [USER_PRESET_STORAGE_KEY]: JSON.stringify(slots()),
+    [STARTER_PRESETS_FLAG_KEY]: '1',
+  });
+  assert.ok(loadUserPresets(storage).every((item) => item === null));
+});
+
+test('a browser with saved presets gets no starters and is marked as offered', () => {
+  const list = slots();
+  list[3] = preset('Mine', 42);
+  const storage = fakeStorage({ [USER_PRESET_STORAGE_KEY]: JSON.stringify(list) });
+  const loaded = loadUserPresets(storage);
+  assert.equal(loaded.filter(Boolean).length, 1);
+  assert.equal(loaded[3].name, 'Mine');
+  assert.equal(storage.data.get(STARTER_PRESETS_FLAG_KEY), '1');
+  // Deleting that preset later does not bring the starters in.
+  storage.setItem(USER_PRESET_STORAGE_KEY, JSON.stringify(slots()));
+  assert.ok(loadUserPresets(storage).every((item) => item === null));
+});
+
+test('presets moved from the 30-slot key count as saved presets', () => {
+  const old = Array.from({ length: 30 }, () => null);
+  old[0] = preset('Old work', 123);
+  const storage = fakeStorage({ [LEGACY_USER_PRESET_STORAGE_KEY]: JSON.stringify(old) });
+  const loaded = loadUserPresets(storage);
+  assert.equal(loaded.filter(Boolean).length, 1);
+  assert.equal(storage.data.get(STARTER_PRESETS_FLAG_KEY), '1');
+});
+
+test('unreadable preset data is left alone and gets no starters', () => {
+  const storage = fakeStorage({ [USER_PRESET_STORAGE_KEY]: '{not json' });
+  assert.ok(loadUserPresets(storage).every((item) => item === null));
+  assert.equal(storage.data.get(USER_PRESET_STORAGE_KEY), '{not json');
+  assert.equal(storage.data.has(STARTER_PRESETS_FLAG_KEY), false);
+});
+
+test('replace all empties every slot and fills from U01 in file order', () => {
+  const current = slots(preset('Ipad only'), null, preset('Wave', 400));
+  current[10] = preset('Old');
+  const incoming = [preset('Wave', 500), preset('Wave', 600), preset('Phone')];
+  const result = applyPresetReplace(current, incoming);
+  assert.equal(result.ok, true);
+  assert.equal(result.changes, true);
+  assert.equal(result.replaced, 3);
+  assert.equal(result.added, 3);
+  assert.equal(result.presets.length, USER_PRESET_COUNT);
+  assert.deepEqual(result.presets.slice(0, 3), incoming);
+  assert.equal(result.presets.slice(3).every((item) => item === null), true);
+  // Names are kept as they are, even when two presets share one.
+  assert.deepEqual(result.presets.slice(0, 2).map((item) => item.name), ['Wave', 'Wave']);
+  // The current slots are not changed in place.
+  assert.equal(current[0].name, 'Ipad only');
+});
+
+test('replace all reports no change when the slots already hold the file in order', () => {
+  const incoming = [preset('A', 100), preset('B', 200)];
+  assert.equal(applyPresetReplace(slots(...incoming), incoming).changes, false);
+  // Gaps close up but hold the same presets in the same order.
+  const gapped = slots(incoming[0], null, incoming[1]);
+  assert.equal(applyPresetReplace(gapped, incoming).changes, false);
+  assert.equal(applyPresetReplace(slots(incoming[1], incoming[0]), incoming).changes, true);
+  assert.equal(applyPresetReplace(slots(...incoming, preset('C')), incoming).changes, true);
+  assert.equal(applyPresetReplace(slots(incoming[0], preset('B', 250)), incoming).changes, true);
+});
+
+test('replace all with an empty file clears every slot', () => {
+  const result = applyPresetReplace(slots(preset('A')), []);
+  assert.equal(result.ok, true);
+  assert.equal(result.changes, true);
+  assert.equal(result.presets.every((item) => item === null), true);
+});
+
+test('replace all is blocked when the file holds more presets than slots', () => {
+  const incoming = Array.from({ length: USER_PRESET_COUNT + 1 }, (_, i) => preset(`P${i}`));
+  const result = applyPresetReplace(slots(), incoming);
+  assert.equal(result.ok, false);
+  assert.equal(result.added, USER_PRESET_COUNT);
 });

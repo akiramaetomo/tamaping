@@ -4,14 +4,20 @@ import assert from 'node:assert/strict';
 import { DEFAULT_SETTINGS } from '../.test-build/sim/settings.js';
 import {
   FACTORY_PRESETS,
+  FACTORY_PRESET_COUNT,
   PRESET_EXPORT_SCHEMA_VERSION,
   PRESET_MY_PANEL_MAX_ITEMS,
   USER_PRESET_COUNT,
   createCurrentPresetExport,
   createUserPresetExport,
+  normalizePresetSettings,
+  normalizeUserPreset,
   parsePresetExport,
   presetFromSettings,
+  STARTER_USER_PRESETS,
 } from '../.test-build/sim/presets.js';
+import { FACTORY_PRESET_DEFINITION_DATA } from '../.test-build/sim/factoryPresetData.js';
+import { DEFAULT_PRESET_START } from '../.test-build/sim/presetStart.js';
 import { applyPresetImport, planPresetImport } from '../.test-build/sim/presetImport.js';
 
 function importInto(current, incoming) {
@@ -19,45 +25,97 @@ function importInto(current, incoming) {
   return applyPresetImport(current, plan, []);
 }
 
-test('factory and user preset capacities match the curated release set', () => {
-  assert.equal(FACTORY_PRESETS.length, 30);
+test('factory list follows the 2026-11 selection, numbered by its order', () => {
+  assert.equal(FACTORY_PRESETS.length, FACTORY_PRESET_DEFINITION_DATA.length);
+  assert.equal(FACTORY_PRESET_COUNT, 50);
   assert.equal(USER_PRESET_COUNT, 60);
+  // Fixed places from the 2026-11-16 polish (user decision); the rest is spread
+  // so that similar presets do not follow each other.
   assert.equal(FACTORY_PRESETS[0].name, '1. Hello Ping');
-  assert.equal(FACTORY_PRESETS[0].formationLabel, 'Hello Ping');
-  assert.equal(FACTORY_PRESETS[0].start.formation, 'name');
-  assert.equal(FACTORY_PRESETS[1].name, '2. Blue Sand Cosmos');
-  assert.equal(FACTORY_PRESETS[1].formationLabel, 'Blue SAND');
-  assert.equal(FACTORY_PRESETS[1].start.formation, 'name');
-  assert.equal(FACTORY_PRESETS[2].name, '3. ラピスグラス');
-  assert.equal('formationLabel' in FACTORY_PRESETS[2], false);
-  assert.equal(FACTORY_PRESETS[3].name, '4. おれんじブリブリ');
-  assert.equal(FACTORY_PRESETS[3].formationLabel, 'おれブリ');
-  assert.equal(FACTORY_PRESETS[7].formationLabel, 'TAMAN BRIN');
-  assert.equal(FACTORY_PRESETS[8].name, '9. Ball Rhythm');
-  assert.equal('formationLabel' in FACTORY_PRESETS[8], false);
-  assert.equal(FACTORY_PRESETS[15].name, '16. Moon 海水浴');
-  assert.equal(FACTORY_PRESETS[15].formationLabel, '九十九里');
-  assert.equal(FACTORY_PRESETS[17].name, '18. Chromatic Star Cosmos');
-  assert.equal(FACTORY_PRESETS[17].formationLabel, 'Chroma Star');
-  assert.equal(FACTORY_PRESETS[23].name, '24. Play with Yellow Python');
-  assert.equal(FACTORY_PRESETS[23].start.formation, 'spiral');
-  assert.equal(FACTORY_PRESETS[26].name, '✦m ネオン盆踊り');
-  assert.equal(FACTORY_PRESETS[26].formationLabel, 'BON');
-  assert.equal(FACTORY_PRESETS[24].name.startsWith('✦'), true);
-  assert.equal(FACTORY_PRESETS[29].name.startsWith('✦'), true);
-  assert.equal(FACTORY_PRESETS.some((preset) => preset.name.includes('Pink Sand Scream')), false);
-  assert.equal(FACTORY_PRESETS.some((preset) => preset.name.includes('Jelly Synth')), true);
-  assert.equal(FACTORY_PRESETS.every((preset) => preset.settings.audioTriggerSpreadMs === 16), true);
+  assert.equal(FACTORY_PRESETS[0].formationLabel, 'Hello');
+  assert.equal(FACTORY_PRESETS[1].name, '2. Blue Sand 2K');
+  assert.equal(FACTORY_PRESETS[2].name, '3. Hello Tama');
+  assert.deepEqual(FACTORY_PRESETS[2].designViewport, { width: 537, height: 537 });
+  assert.equal(FACTORY_PRESETS[3].name, '4. Glow Star 1K');
+  assert.equal(FACTORY_PRESETS[13].name, '14. Gyu-Pang☆');
+  assert.equal(FACTORY_PRESETS[33].name, '34. Pink Sand ART');
+  assert.equal(FACTORY_PRESETS[9].name, '10. Glow Sparkle');
+  assert.equal(FACTORY_PRESETS[9].formationLabel, 'Glow Sparkle');
+  assert.equal(FACTORY_PRESETS[35].name, '36. Laser Star');
+  assert.equal(FACTORY_PRESETS[38].name, '39. Playing with Fish at Night');
+  assert.equal(FACTORY_PRESETS[39].name, '40. Black Shoal');
+  // The ten agent presets (2026-11-16) follow at 41-50 (user decision). The
+  // agent's mark is in the name only: the Name formation draws the label.
   assert.deepEqual(
-    FACTORY_PRESETS.reduce(
-      (counts, preset) => ({
-        ...counts,
-        [preset.start.formation]: counts[preset.start.formation] + 1,
-      }),
-      { random: 0, spiral: 0, name: 0 },
-    ),
-    { random: 7, spiral: 11, name: 12 },
+    FACTORY_PRESETS.slice(40).map((preset) => preset.name),
+    [
+      '41. 🤖 Giant Rings',
+      '42. 🤖 Snow Footprints',
+      '43. 🤖 Star Slalom',
+      '44. 🤖 Green Vine',
+      '45. 🤖 Light Painting',
+      '46. 🤖 Melting Word',
+      '47. 🤖 Wind Chimes',
+      '48. 🤖 Pond Scatter',
+      '49. 🤖 Dust Planet',
+      '50. 🤖 Lone Comet',
+    ],
   );
+  FACTORY_PRESETS.forEach((preset, index) => {
+    assert.equal(preset.name.includes('🤖'), index >= 40, preset.name);
+    assert.equal(preset.formationLabel?.includes('🤖') ?? false, false, preset.name);
+    assert.ok(preset.name.length <= 40, preset.name);
+  });
+  FACTORY_PRESETS.forEach((preset, index) => {
+    assert.equal(preset.id, `factory-${index + 1}`);
+    // One number only: the source prefixes (`5. `, `✦29 `) are gone.
+    assert.match(preset.name, new RegExp(`^${index + 1}\. [^\d✦]`), preset.name);
+    assert.equal('audioTriggerSpreadMs' in preset.settings, false, preset.name);
+    assert.notEqual(preset.start.ballY, 68, preset.name);
+  });
+  // A row without a start takes the default start.
+  assert.deepEqual(FACTORY_PRESETS[13].start, DEFAULT_PRESET_START);
+});
+
+test('every factory entry is its source preset after normalization', () => {
+  FACTORY_PRESET_DEFINITION_DATA.forEach((entry, index) => {
+    const factory = FACTORY_PRESETS[index];
+    const source = normalizeUserPreset(entry, index);
+    assert.equal(factory.name, `${index + 1}. ${source.name}`);
+    assert.equal(factory.formationLabel, source.formationLabel);
+    assert.deepEqual(factory.designViewport, source.designViewport);
+    assert.deepEqual(factory.start, source.start ?? DEFAULT_PRESET_START);
+    assert.deepEqual(
+      normalizePresetSettings(factory.settings),
+      source.settings,
+      factory.name,
+    );
+  });
+});
+
+test('starter user presets are the 11 B rows in the user preset shape', () => {
+  assert.equal(STARTER_USER_PRESETS.length, 11);
+  assert.deepEqual(
+    STARTER_USER_PRESETS.map((preset) => preset.name),
+    [
+      'Ball Rhythm',
+      'Chromatic Star Cosmos',
+      'Snake Pulse',
+      '桃色ワープゼリー',
+      'Filled Red, Blue, White',
+      'Honeybee Fish',
+      'Unlinked Fish',
+      'Blue Black Hole',
+      'Snake Rhythm',
+      'Cyber Fish',
+      'Playing with Synchronized Fish',
+    ],
+  );
+  for (const preset of STARTER_USER_PRESETS) {
+    assert.deepEqual(normalizeUserPreset(preset), preset, preset.name);
+    assert.equal('audioTriggerSpreadMs' in preset.settings, false, preset.name);
+    assert.notEqual(preset.start?.ballY, 68, preset.name);
+  }
 });
 
 test('current preset export preserves tunable settings and excludes runtime toggles', () => {
@@ -96,7 +154,8 @@ test('current preset export preserves tunable settings and excludes runtime togg
   assert.equal(exportFile.presets[0].settings.particleCount, 321);
   assert.equal(exportFile.presets[0].settings.particleRadius, 64);
   assert.equal(exportFile.presets[0].settings.particleRimWidth, 75);
-  assert.equal(exportFile.presets[0].settings.audioTriggerSpreadMs, 16);
+  // Sound timing is not part of a preset any more (no effect since 2026-10-27).
+  assert.equal('audioTriggerSpreadMs' in exportFile.presets[0].settings, false);
   assert.equal('particleFillEnabled' in exportFile.presets[0].settings, false);
   assert.equal('soundEnabled' in exportFile.presets[0].settings, false);
   assert.equal('debug' in exportFile.presets[0].settings, false);
@@ -159,7 +218,7 @@ test('preset import normalizes legacy audio fields, invalid choices, and numeric
   assert.equal(preset.settings.audioParticleFrequencySpread, 2);
   assert.equal(preset.settings.audioBallDurationMs, 1);
   assert.equal(preset.settings.audioParticleDurationMs, 1);
-  assert.equal(preset.settings.audioTriggerSpreadMs, DEFAULT_SETTINGS.audioTriggerSpreadMs);
+  assert.equal('audioTriggerSpreadMs' in preset.settings, false);
   assert.equal(preset.settings.audioBallWaveform, DEFAULT_SETTINGS.audioBallWaveform);
   assert.equal(preset.settings.audioParticleWaveform, 'square');
   assert.equal(preset.settings.controlBallPalette, 'pink');
@@ -210,10 +269,12 @@ test('presets without shape and effect keys apply the defaults', () => {
   ]) {
     assert.equal(preset.settings[key], DEFAULT_SETTINGS[key], key);
   }
-  // Factory presets carry the defaults too, so switching presets resets the look.
+  // Factory presets carry every shape and effect key, so switching presets
+  // always sets the look.
   for (const factory of FACTORY_PRESETS) {
-    assert.equal(factory.settings.particleShape, 'circle', factory.name);
-    assert.equal(factory.settings.ballFxAfterglow, false, factory.name);
+    for (const key of ['particleShape', 'ballShape', 'ballFxAfterglow', 'particleFxTrail']) {
+      assert.equal(typeof factory.settings[key], typeof DEFAULT_SETTINGS[key], `${factory.name} ${key}`);
+    }
   }
 });
 
@@ -227,9 +288,13 @@ test('preset import accepts My Panel as a pinned group', () => {
 
 test('a preset without My Panel rows stays without them', () => {
   assert.equal('myPanelItems' in presetFromSettings(DEFAULT_SETTINGS, 'my'), false);
-  for (const factory of FACTORY_PRESETS) {
-    assert.equal('myPanelItems' in factory.settings, false, factory.name);
-  }
+  FACTORY_PRESET_DEFINITION_DATA.forEach((entry, index) => {
+    assert.equal(
+      'myPanelItems' in FACTORY_PRESETS[index].settings,
+      'myPanelItems' in entry.settings,
+      entry.name,
+    );
+  });
 
   const [noKey, notAList] = parsePresetExport(JSON.stringify([
     { name: 'No rows', settings: {} },
@@ -280,7 +345,7 @@ test('preset import fills missing particle rim width as pseudo-fill for legacy p
   ]));
 
   assert.equal(preset.settings.particleRimWidth, 100);
-  assert.equal(preset.settings.audioTriggerSpreadMs, 16);
+  assert.equal('audioTriggerSpreadMs' in preset.settings, false);
   assert.equal('particleFillEnabled' in preset.settings, false);
 });
 

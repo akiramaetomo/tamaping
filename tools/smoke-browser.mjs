@@ -191,7 +191,31 @@ function checkLayout(label, layout) {
 }
 
 async function runDesktop(page, url) {
+  // The throwaway profile makes this the browser's real first visit.
   await loadApp(page, url, DESKTOP);
+  const userSlots = `[...document.querySelectorAll('.hud__preset-select option')]
+    .filter((option) => option.value.startsWith('user:') && !option.disabled)
+    .map((option) => option.textContent)`;
+  const firstVisit = await page.evaluate(userSlots);
+  check('first visit: the 11 starter presets fill U01 to U11',
+    firstVisit.length === 11 && firstVisit[0].startsWith('U01: Ball Rhythm')
+      && firstVisit[10].startsWith('U11: Playing with Synchronized Fish'),
+    JSON.stringify(firstVisit.slice(0, 2)));
+  check('first visit: the starter flag is stored',
+    (await page.evaluate(`localStorage.getItem('dotping.starterPresets.v1')`)) === '1');
+  const factoryCount = await page.evaluate(
+    `document.querySelectorAll('.hud__preset-select option[value^="factory:"]').length`,
+  );
+  check('first visit: the factory list has 50 presets', factoryCount === 50, `${factoryCount}`);
+  // Second visit: the saved list is read, nothing more goes in.
+  await loadApp(page, url, DESKTOP);
+  check('second visit: still the same 11 user presets',
+    JSON.stringify(await page.evaluate(userSlots)) === JSON.stringify(firstVisit));
+  // Deleted by the player: the flag keeps the starters from coming back.
+  await page.evaluate(`localStorage.setItem('dotping.userPresets.v2', JSON.stringify(Array(60).fill(null)))`);
+  await loadApp(page, url, DESKTOP);
+  check('after deleting them all: the starters do not come back',
+    (await page.evaluate(userSlots)).length === 0);
 
   check('desktop: page title', (await page.evaluate('document.title')).length > 0);
   const layout = await page.evaluate(LAYOUT_PROBE);
@@ -460,6 +484,10 @@ const DETAILS_CHANGE = `(() => {
   }
 })()`;
 
+// Scenario reset: a browser with no presets that was already offered the
+// starter presets, so they do not fill the user slots the checks use.
+const CLEAR_STORAGE = "localStorage.clear(); localStorage.setItem('dotping.starterPresets.v1', '1')";
+
 const selectPreset = (value) => `(() => {
   const select = document.querySelector('.hud__preset-select');
   select.value = ${JSON.stringify(value)};
@@ -473,7 +501,7 @@ function sameValues(a, b) {
 }
 
 async function runWorkProtection(page, url) {
-  await page.evaluate(`localStorage.clear()`);
+  await page.evaluate(`${CLEAR_STORAGE}`);
   await loadApp(page, url, DESKTOP);
   await click(page, '.settings-button');
 
@@ -508,7 +536,7 @@ async function runWorkProtection(page, url) {
   // Export file read back through Import, into a browser with no presets.
   const exported = await page.evaluate(`localStorage.getItem('dotping.userPresets.v2')`);
   await sleep(800);
-  await page.evaluate(`localStorage.clear()`);
+  await page.evaluate(`${CLEAR_STORAGE}`);
   await loadApp(page, url, DESKTOP);
   const importFile = JSON.stringify({ kind: 'dotping-presets', presets: JSON.parse(exported).filter(Boolean) });
   await importThroughInput(page, importFile);
@@ -555,7 +583,7 @@ async function runWorkProtection(page, url) {
   check('Auto Backup: inactive on a diagnostic URL',
     diagnostic.backup === 'Auto Backup: not available here', diagnostic.backup);
 
-  await page.evaluate(`localStorage.clear()`);
+  await page.evaluate(`${CLEAR_STORAGE}`);
 }
 
 const MY_PANEL_ROWS = `[...document.querySelectorAll('.hud__my-items .hud__pick')]
@@ -563,12 +591,14 @@ const MY_PANEL_ROWS = `[...document.querySelectorAll('.hud__my-items .hud__pick'
 const OWN_MY_PANEL = `localStorage.getItem('dotping.myPanel.v1')`;
 const SAVED_PRESET_ROWS = `JSON.parse(localStorage.getItem('dotping.userPresets.v2'))[0].settings.myPanelItems`;
 
+const FACTORY_WITHOUT_ROWS = 'factory:factory-6';
+
 // A preset's rows against the browser's own list, driven through the real UI.
 async function runPresetMyPanel(page, url) {
   for (const [label, viewport] of [['1280px', DESKTOP], ['360px', PHONE]]) {
     const own = JSON.stringify({ items: ['mode.random'] });
     await page.evaluate(`(() => {
-      localStorage.clear();
+      ${CLEAR_STORAGE};
       localStorage.setItem('dotping.myPanel.v1', ${JSON.stringify(own)});
       localStorage.setItem('dotping.userPresets.v1', ${JSON.stringify(JSON.stringify([{
         name: 'Rows',
@@ -596,12 +626,16 @@ async function runPresetMyPanel(page, url) {
       return {
         rows: [...host.querySelectorAll('.hud__my-items .hud__pick')].map((pick) => pick.dataset.label),
         hidden: host.hidden,
+        defaultShown: [...host.querySelectorAll('.hud__my-default')].some((button) => !button.hidden),
         pageScroll: document.documentElement.scrollWidth,
       };
     })()`);
     check(`preset My Panel ${label}: a preset pinning My Panel shows its rows in front`,
       !front.hidden && same(front.rows, ['Flash', 'Sound']) && front.pageScroll <= viewport.width,
       JSON.stringify(front));
+    check(`preset My Panel ${label}: the pinned My Panel has no Default button`, !front.defaultShown);
+    check(`preset My Panel ${label}: Default is hidden while My Panel has rows`,
+      await page.evaluate(`document.querySelector('.hud__my-default').hidden`));
     check(`preset My Panel ${label}: applying leaves the browser list`,
       (await page.evaluate(OWN_MY_PANEL)) === own);
 
@@ -635,14 +669,15 @@ async function runPresetMyPanel(page, url) {
     const saved = await page.evaluate(SAVED_PRESET_ROWS);
     check(`preset My Panel ${label}: saving stores the shown rows`, same(saved, ['audio.sound']), `${saved}`);
 
-    await page.evaluate(selectPreset('factory:factory-1'));
+    // F06 (Jelly Synth) carries no My Panel rows of its own.
+    await page.evaluate(selectPreset(FACTORY_WITHOUT_ROWS));
     await sleep(100);
     await showRows('a preset without rows shows the browser list', ['Random']);
     await page.evaluate(selectPreset('user:0'));
     await sleep(100);
     await showRows('applying the saved preset shows the saved rows', ['Sound']);
 
-    await page.evaluate(selectPreset('factory:factory-1'));
+    await page.evaluate(selectPreset(FACTORY_WITHOUT_ROWS));
     await sleep(100);
     await removeRow('Random');
     await sleep(100);
@@ -651,10 +686,22 @@ async function runPresetMyPanel(page, url) {
         && (await page.evaluate(PRESET_STATUS)) === 'Applied',
       await page.evaluate(PRESET_STATUS));
 
+    // An empty panel offers Default, which fills it with the standard rows.
+    check(`preset My Panel ${label}: Default shows when My Panel is empty`,
+      !(await page.evaluate(`document.querySelector('.hud__my-default').hidden`)));
+    await page.evaluate(`document.querySelector('.hud__my-default').click()`);
+    await sleep(100);
+    const filled = JSON.parse(await page.evaluate(OWN_MY_PANEL)).items;
+    check(`preset My Panel ${label}: Default fills the standard rows, without Sound`,
+      same(filled, ['mode.random', 'mode.flash', 'mode.gravityStrength',
+        'audio.particle.pitch', 'audio.particle.spread', 'audio.particle.length'])
+        && (await page.evaluate(`document.querySelector('.hud__my-default').hidden`)),
+      filled.join());
+
     // Choosing a preset from the Preset row in My Panel, which that choice may rebuild.
     await sleep(800);
     await page.evaluate(`(() => {
-      localStorage.clear();
+      ${CLEAR_STORAGE};
       localStorage.setItem('dotping.myPanel.v1', ${JSON.stringify(JSON.stringify({ items: ['preset.select'] }))});
       localStorage.setItem('dotping.userPresets.v1', ${JSON.stringify(JSON.stringify([
         { name: 'Same rows', settings: { myPanelItems: ['preset.select'] } },
@@ -678,7 +725,7 @@ async function runPresetMyPanel(page, url) {
       !rebuilt.kept && rebuilt.value === 'user:1', JSON.stringify(rebuilt));
     await sleep(800);
   }
-  await page.evaluate(`localStorage.clear()`);
+  await page.evaluate(`${CLEAR_STORAGE}`);
 }
 
 // The browser's file picker cannot run headless, so it hands out a real file
@@ -738,7 +785,7 @@ function smokePreset(name, particleCount) {
 
 async function seedPresets(page, url, viewport, presets, key = 'dotping.userPresets.v2') {
   await page.evaluate(`(() => {
-    localStorage.clear();
+    ${CLEAR_STORAGE};
     localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(JSON.stringify(presets))});
   })()`);
   await loadApp(page, url, viewport);
@@ -856,7 +903,66 @@ async function runImportMerge(page, url) {
   check('import merge: Cancel writes nothing',
     cancelled.status === 'Import cancelled' && cancelled.names[59] === 'P60' && !cancelled.names.includes('One more'),
     cancelled.status);
-  await page.evaluate(`localStorage.clear()`);
+
+  // Replace all: this device's own presets go, the file's fill from U01.
+  for (const [label, viewport] of [['1280px', DESKTOP], ['360px', PHONE]]) {
+    await seedPresets(page, url, viewport, [smokePreset('Device only', 50), null, smokePreset('Wave', 100)]);
+    await importThroughInput(page, JSON.stringify([smokePreset('Wave', 100), smokePreset('Rain', 200)]));
+    const merge = await page.evaluate(`(() => {
+      const dialog = document.querySelector('.import-review');
+      return dialog && {
+        mode: dialog.querySelector('.import-review__mode-select').value,
+        confirm: dialog.querySelector('.import-review__confirm').textContent,
+        replaceHidden: dialog.querySelector('.import-review__replace').hidden,
+      };
+    })()`);
+    check(`import replace ${label}: the panel opens in Merge mode`,
+      merge?.mode === 'merge' && merge.confirm === 'Import' && merge.replaceHidden === true,
+      JSON.stringify(merge));
+
+    const replace = await page.evaluate(`(() => {
+      const dialog = document.querySelector('.import-review');
+      const select = dialog.querySelector('.import-review__mode-select');
+      select.value = 'replace';
+      select.dispatchEvent(new Event('change'));
+      const r = dialog.getBoundingClientRect();
+      const list = dialog.querySelector('.import-review__list');
+      const confirm = dialog.querySelector('.import-review__confirm');
+      return {
+        summary: dialog.querySelector('.import-review__replace-summary').textContent,
+        warning: getComputedStyle(dialog.querySelector('.import-review__warning')).display !== 'none',
+        listShown: getComputedStyle(list).display !== 'none',
+        confirm: confirm.textContent,
+        disabled: confirm.disabled,
+        left: r.left,
+        right: r.right,
+        pageScroll: document.documentElement.scrollWidth,
+      };
+    })()`);
+    check(`import replace ${label}: Replace all shows what it replaces and hides the rows`,
+      replace.summary === 'Replaces 2 saved presets with 2 from the file' && replace.warning
+        && !replace.listShown && replace.confirm === 'Replace' && !replace.disabled,
+      JSON.stringify(replace));
+    check(`import replace ${label}: the panel fits the screen`,
+      replace.left >= 0 && replace.right <= viewport.width + 1 && replace.pageScroll <= viewport.width,
+      `${Math.round(replace.left)}-${Math.round(replace.right)}`);
+
+    await click(page, '.import-review__confirm');
+    await sleep(100);
+    const replaced = await page.evaluate(`({
+      status: document.querySelector('.hud__preset-status').textContent,
+      names: ${SAVED_NAMES},
+      front: [...document.querySelector('.front-preset-bar__select').querySelectorAll('option')]
+        .filter((option) => option.value.startsWith('user:')).map((option) => option.textContent),
+    })`);
+    check(`import replace ${label}: Replace leaves only the file's presets, from U01`,
+      replaced.status === 'Replaced 2 with 2'
+        && JSON.stringify(replaced.names.slice(0, 3)) === JSON.stringify(['Wave', 'Rain', null])
+        && replaced.names.filter(Boolean).length === 2
+        && JSON.stringify(replaced.front) === JSON.stringify(['U01: Wave', 'U02: Rain']),
+      `${replaced.status} ${JSON.stringify(replaced.names.slice(0, 3))}`);
+  }
+  await page.evaluate(`${CLEAR_STORAGE}`);
 }
 
 async function runPresetStart(page, url) {
@@ -906,14 +1012,16 @@ async function runPresetStart(page, url) {
   await click(page, '.front-preset-bar__restart');
   check('preset start: Restart replays the start', (await page.evaluate(PRESET_STATUS)) === 'Restarted',
     await page.evaluate(PRESET_STATUS));
-  await click(page, '.front-preset-bar__step[aria-label="Next preset"]');
+  // F03 (Hello Tama) starts with the name formation and the Ball at 25% height.
+  await page.evaluate(selectPreset('factory:factory-3'));
+  await sleep(100);
   const applied = await page.evaluate(`({
     status: document.querySelector('.hud__preset-status')?.textContent ?? '',
     formation: document.querySelector('.hud__preset-start select')?.value ?? '',
   })`);
   check('preset start: applying a factory preset fills the Start block',
     applied.status === 'Applied' && applied.formation === 'name', JSON.stringify(applied));
-  await page.evaluate(`localStorage.clear()`);
+  await page.evaluate(`${CLEAR_STORAGE}`);
 }
 
 async function runAutoBackup(page, url) {
@@ -955,7 +1063,7 @@ async function runAutoBackup(page, url) {
 
     await page.evaluate(`(() => {
       const select = document.querySelector('.hud__preset-select');
-      select.value = 'factory:factory-2';
+      select.value = 'factory:factory-3';
       select.dispatchEvent(new Event('change', { bubbles: true }));
       Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
       document.dispatchEvent(new Event('visibilitychange'));
@@ -980,7 +1088,7 @@ async function runAutoBackup(page, url) {
       (await page.evaluate(`document.querySelector('.hud__preset-backup-text').textContent`)) === 'Auto Backup: off');
   } finally {
     await page.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
-    await page.evaluate(`localStorage.clear()`).catch(() => {});
+    await page.evaluate(`${CLEAR_STORAGE}`).catch(() => {});
   }
 }
 

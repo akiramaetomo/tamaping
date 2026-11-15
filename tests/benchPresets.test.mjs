@@ -15,7 +15,7 @@ import {
   presetSettingsForValue,
 } from '../.test-build/app/presetValues.js';
 import { presetBrowseOrder } from '../.test-build/app/frontPresetBar.js';
-import { FACTORY_PRESETS } from '../.test-build/sim/presets.js';
+import { FACTORY_PRESETS, FACTORY_PRESET_COUNT } from '../.test-build/sim/presets.js';
 import { DEFAULT_PRESET_START } from '../.test-build/sim/presetStart.js';
 
 const byId = (id) => BENCH_PRESETS.find((preset) => preset.id === id);
@@ -49,8 +49,8 @@ test('bench presets define the four agreed scenes at 1000 dots', () => {
 });
 
 test('bench presets stay out of the factory list and front bar browsing', () => {
-  assert.equal(FACTORY_PRESETS.length, 30);
-  assert.ok(FACTORY_PRESETS.every((preset) => !preset.name.startsWith('⏱')));
+  assert.equal(FACTORY_PRESETS.length, FACTORY_PRESET_COUNT);
+  assert.ok(FACTORY_PRESETS.every((preset) => !preset.name.includes('⏱')));
   assert.ok(presetBrowseOrder([]).every((value) => !value.startsWith('bench:')));
 });
 

@@ -13,7 +13,6 @@ import {
   randomDirectionVelocity,
   spiralSpeedFactor,
   startBallPosition,
-  startFromInitialFormation,
 } from '../.test-build/sim/presetStart.js';
 import {
   FACTORY_PRESETS,
@@ -61,15 +60,17 @@ test('start values are clamped, and missing or broken values use the default', (
   assert.equal(DEFAULT_PRESET_START.particleSpeed, START_SCATTER_SPEED);
 });
 
-test('factory initial formations move to starts that keep their look', () => {
-  assert.deepEqual(startFromInitialFormation('random'), DEFAULT_PRESET_START);
-  assert.deepEqual(startFromInitialFormation(undefined), DEFAULT_PRESET_START);
-  assert.deepEqual(startFromInitialFormation('name'), { ...DEFAULT_PRESET_START, formation: 'name', particleSpeed: 0 });
-  assert.deepEqual(
-    startFromInitialFormation('flash'),
-    { ...DEFAULT_PRESET_START, formation: 'spiral', particleSpeed: START_SPIRAL_SPEED },
-  );
-  assert.ok(FACTORY_PRESETS.every((preset) => preset.start.ballSpeed === 0 && preset.start.ballY === 68));
+test('the default start puts the Ball at the centre, standing still', () => {
+  assert.deepEqual(DEFAULT_PRESET_START, {
+    formation: 'random',
+    ballX: 50,
+    ballY: 50,
+    ballSpeed: 0,
+    particleSpeed: START_SCATTER_SPEED,
+  });
+  // Factory presets keep the start each one was tuned with.
+  assert.ok(FACTORY_PRESETS.some((preset) => preset.start.ballSpeed > 0));
+  assert.ok(FACTORY_PRESETS.every((preset) => preset.start.ballY !== 68));
 });
 
 test('the spiral keeps the old Flash speed pattern, with the slider as its average', () => {

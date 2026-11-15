@@ -48,7 +48,6 @@ export const FX_RANGES = {
   afterglowLength: [0.25, 2],
 } as const satisfies Record<string, readonly [number, number]>;
 export type AudioWaveform = 'sine' | 'triangle' | 'sawtooth' | 'square';
-export type AudioTriggerSpreadMs = 0 | 16;
 
 export type DotpingSettings = {
   collisionMode: CollisionMode;
@@ -131,7 +130,6 @@ export type DotpingSettings = {
   audioParticleFrequencyHz: number;
   audioParticleFrequencySpread: number;
   audioParticleDurationMs: number;
-  audioTriggerSpreadMs: AudioTriggerSpreadMs;
   debug: boolean;
 };
 
@@ -204,6 +202,5 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   audioParticleFrequencyHz: 4000,
   audioParticleFrequencySpread: 1,
   audioParticleDurationMs: 150,
-  audioTriggerSpreadMs: 0,
   debug: false,
 };

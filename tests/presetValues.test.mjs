@@ -62,12 +62,16 @@ test('preset values resolve factory, user, empty, and custom selections', () => 
   assert.equal(presetSettingsForValue('custom', userPresets), null);
 });
 
-test('design viewport comes only from user presets that recorded one', () => {
+test('design viewport comes from presets that recorded one', () => {
   assert.deepEqual(designViewportForPresetValue('user:1', userPresets), { width: 1280, height: 720 });
   assert.equal(designViewportForPresetValue('user:2', userPresets), DEFAULT_DESIGN_VIEWPORT);
   assert.equal(designViewportForPresetValue('user:0', userPresets), DEFAULT_DESIGN_VIEWPORT);
+  // Factory presets carry their own design screen, as user presets do.
+  const square = FACTORY_PRESETS.find((preset) => preset.designViewport?.width === 537);
+  assert.deepEqual(designViewportForPresetValue(`factory:${square.id}`, userPresets), { width: 537, height: 537 });
+  const unrecorded = FACTORY_PRESETS.find((preset) => !preset.designViewport);
   assert.equal(
-    designViewportForPresetValue(`factory:${factory.id}`, userPresets),
+    designViewportForPresetValue(`factory:${unrecorded.id}`, userPresets),
     DEFAULT_DESIGN_VIEWPORT,
   );
 });

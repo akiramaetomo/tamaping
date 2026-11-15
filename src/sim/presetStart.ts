@@ -15,9 +15,6 @@ export type PresetStart = {
   particleSpeed: number;
 };
 
-// The factory-data field the start replaces.
-export type LegacyInitialFormation = 'random' | 'flash' | 'name';
-
 export const START_FORMATIONS: ReadonlyArray<[StartFormation, string]> = [
   ['random', 'Random'],
   ['spiral', 'Spiral'],
@@ -35,26 +32,14 @@ export const START_SCATTER_SPEED = 25;
 export const START_SPIRAL_SPEED = 28;
 
 // Used for presets and files without a start, and when nothing was applied.
-// It matches a freshly built scene: scatter, Ball at its usual spot.
+// It matches a freshly built scene: scatter, Ball at the centre (50%/50%).
 export const DEFAULT_PRESET_START: PresetStart = {
   formation: 'random',
   ballX: 50,
-  ballY: 68,
+  ballY: 50,
   ballSpeed: 0,
   particleSpeed: START_SCATTER_SPEED,
 };
-
-export function startFromInitialFormation(
-  initialFormation: LegacyInitialFormation | null | undefined,
-): PresetStart {
-  if (initialFormation === 'name') {
-    return { ...DEFAULT_PRESET_START, formation: 'name', particleSpeed: 0 };
-  }
-  if (initialFormation === 'flash') {
-    return { ...DEFAULT_PRESET_START, formation: 'spiral', particleSpeed: START_SPIRAL_SPEED };
-  }
-  return { ...DEFAULT_PRESET_START };
-}
 
 export function normalizePresetStart(value: unknown): PresetStart {
   const source = value && typeof value === 'object' ? (value as Partial<PresetStart>) : {};

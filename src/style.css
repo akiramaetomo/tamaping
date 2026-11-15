@@ -723,8 +723,12 @@ button:disabled {
   opacity: 0.64;
 }
 
+/* A pinned panel stays as quiet as possible over the play field: no outline.
+   Its title at the top left already says which panel it is. The border stays
+   transparent (not removed) so the panel keeps its size. */
+.pinned-settings .hud__group,
 .pinned-settings .hud__group--pinned {
-  border-color: color-mix(in srgb, var(--group-accent, #b9d7ff) 56%, transparent);
+  border-color: transparent;
 }
 
 .pinned-settings .hud__group-title {
@@ -853,6 +857,7 @@ button:disabled {
 }
 
 .hud__my-items[hidden],
+.hud__my-default[hidden],
 .hud__my-hint[hidden] {
   display: none;
 }
@@ -1639,6 +1644,32 @@ button:disabled {
 
 .import-review__row--new .import-review__outcome {
   grid-column: 1 / -1;
+}
+
+.import-review__mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.import-review__list[hidden],
+.import-review__replace[hidden] {
+  display: none;
+}
+
+.import-review__replace {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.import-review__replace p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.import-review__warning {
+  color: #ffd689;
 }
 
 .import-review__message--blocked {

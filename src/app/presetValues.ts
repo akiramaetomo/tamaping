@@ -69,8 +69,8 @@ export function presetSettingsForValue(
   return preset?.settings ?? null;
 }
 
-// Factory presets and user presets without a record use the default screen;
-// bench presets pin their own so every device runs the same world.
+// Presets without a record use the default screen; bench presets pin their own
+// so every device runs the same world.
 export function designViewportForPresetValue(
   value: string,
   userPresets: UserPresetSlots,
@@ -78,7 +78,8 @@ export function designViewportForPresetValue(
   if (benchPresetForValue(value)) {
     return BENCH_DESIGN_VIEWPORT;
   }
-  return userPresetFor(value, userPresets)?.designViewport ?? DEFAULT_DESIGN_VIEWPORT;
+  const preset = factoryPresetFor(value) ?? userPresetFor(value, userPresets);
+  return preset?.designViewport ?? DEFAULT_DESIGN_VIEWPORT;
 }
 
 // The start a preset shows at its first moment. Bench presets and presets

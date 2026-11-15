@@ -9,14 +9,15 @@ import {
   type ParticlePalette,
 } from './settings';
 import { FACTORY_PRESET_DEFINITION_DATA } from './factoryPresetData';
+import { STARTER_USER_PRESET_DATA } from './starterPresetData';
+import type { PresetDataEntry } from './presetData';
 import {
+  DEFAULT_PRESET_START,
   normalizePresetStart,
-  startFromInitialFormation,
   type PresetStart,
 } from './presetStart';
 import { normalizeDesignViewport, type Viewport } from './viewScale';
 
-export const FACTORY_PRESET_COUNT = 30;
 export const USER_PRESET_COUNT = 60;
 export const PRESET_EXPORT_SCHEMA_VERSION = 14;
 export const PRESET_NAME_MAX_LENGTH = 40;
@@ -28,6 +29,9 @@ export const PRESET_MY_PANEL_MAX_ITEMS = 10;
 // update cannot cut the list, and v1 stays as a copy from before the update.
 export const USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v2';
 export const LEGACY_USER_PRESET_STORAGE_KEY = 'dotping.userPresets.v1';
+// Set once the starter presets were offered to this browser, whether they went
+// in or not, so they never come back after the player deletes them.
+export const STARTER_PRESETS_FLAG_KEY = 'dotping.starterPresets.v1';
 const EXPORT_KIND = 'dotping-presets';
 const BALL_PALETTES: readonly BallPalette[] = [
   'black',
@@ -111,7 +115,6 @@ type PresetTuningSettings = Pick<
   | 'audioParticleFrequencyHz'
   | 'audioParticleFrequencySpread'
   | 'audioParticleDurationMs'
-  | 'audioTriggerSpreadMs'
   | 'particleShape'
   | 'particleShapeTurn'
   | 'particleShapeCurve'
@@ -157,6 +160,9 @@ export type FactoryPreset = {
   id: string;
   name: string;
   formationLabel?: string;
+  // Screen the preset was tuned on, as for user presets. Missing means the
+  // default phone design screen.
+  designViewport?: Viewport;
   // What the preset shows at its first moment.
   start: PresetStart;
   settings: PresetSettings;
@@ -186,37 +192,31 @@ export type PresetExportFile = {
 
 const DEFAULT_PRESET = presetFromSettings(DEFAULT_SETTINGS);
 
-function factoryPreset(
-  id: number,
-  name: string,
-  formationLabel: string | null,
-  start: PresetStart,
-  settings: Partial<PresetSettings>,
-): FactoryPreset {
+// Factory entries are written in the user preset shape (see `PresetDataEntry`)
+// and used as written. The number in the name follows the list order.
+function factoryPreset(entry: PresetDataEntry, index: number): FactoryPreset {
+  const formationLabel = sanitizeFormationLabel(entry.formationLabel);
+  const design = normalizeDesignViewport(entry.designViewport);
   return {
-    id: `factory-${id}`,
-    name,
+    id: `factory-${index + 1}`,
+    name: `${index + 1}. ${entry.name}`,
     ...(formationLabel ? { formationLabel } : {}),
-    start,
+    ...(design ? { designViewport: design } : {}),
+    start: entry.start ? normalizePresetStart(entry.start) : { ...DEFAULT_PRESET_START },
     settings: {
       ...DEFAULT_PRESET,
-      ...settings,
-      audioTriggerSpreadMs: 16,
+      ...normalizePresetSettings(entry.settings),
     },
   };
 }
 
-const FACTORY_PRESET_DEFINITIONS: FactoryPreset[] = FACTORY_PRESET_DEFINITION_DATA.map(
-  (preset, index) => factoryPreset(
-    index + 1,
-    preset.name,
-    preset.formationLabel ?? null,
-    startFromInitialFormation(preset.initialFormation),
-    preset.settings,
-  ),
-);
+export const FACTORY_PRESETS: readonly FactoryPreset[] = FACTORY_PRESET_DEFINITION_DATA.map(factoryPreset);
+export const FACTORY_PRESET_COUNT = FACTORY_PRESETS.length;
 
-export const FACTORY_PRESETS = FACTORY_PRESET_DEFINITIONS.slice(0, FACTORY_PRESET_COUNT);
+// The starter set that fills an empty user preset area once per browser.
+export const STARTER_USER_PRESETS: readonly UserPreset[] = STARTER_USER_PRESET_DATA
+  .map((entry, index) => normalizeUserPreset(entry, index))
+  .filter((preset): preset is UserPreset => Boolean(preset));
 
 export function presetFromSettings(
   settings: DotpingSettings,
@@ -262,7 +262,6 @@ export function presetFromSettings(
     audioParticleFrequencyHz: settings.audioParticleFrequencyHz,
     audioParticleFrequencySpread: settings.audioParticleFrequencySpread,
     audioParticleDurationMs: settings.audioParticleDurationMs,
-    audioTriggerSpreadMs: settings.audioTriggerSpreadMs,
     particleShape: settings.particleShape,
     particleShapeTurn: settings.particleShapeTurn,
     particleShapeCurve: settings.particleShapeCurve,
@@ -300,7 +299,7 @@ export function loadUserPresets(storage: PresetStorage | null = browserStorage()
   const migrating = raw === null;
   const source = migrating ? readStorage(storage, LEGACY_USER_PRESET_STORAGE_KEY) : raw;
   if (!source) {
-    return empty;
+    return offerStarterPresets(empty, storage);
   }
 
   let presets = empty;
@@ -310,13 +309,40 @@ export function loadUserPresets(storage: PresetStorage | null = browserStorage()
       presets = empty.map((_, index) => normalizeUserPreset(parsed[index], index));
     }
   } catch {
+    // Unreadable data is left in storage untouched, and no starters go in.
     return empty;
   }
 
   if (migrating) {
     writeUserPresetStorage(presets, storage);
   }
-  return presets;
+  return offerStarterPresets(presets, storage);
+}
+
+// The starter presets go in once per browser, and only into an area with no
+// saved preset. A browser that already holds presets is marked as offered too,
+// so deleting them all later does not bring the starters in.
+function offerStarterPresets(
+  presets: Array<UserPreset | null>,
+  storage: PresetStorage | null,
+): Array<UserPreset | null> {
+  if (readStorage(storage, STARTER_PRESETS_FLAG_KEY) !== null) {
+    return presets;
+  }
+  try {
+    storage?.setItem(STARTER_PRESETS_FLAG_KEY, '1');
+  } catch {
+    // Without storage the starters show for this session only.
+  }
+  if (presets.some(Boolean)) {
+    return presets;
+  }
+  const next = copyUserPresetSlots(STARTER_USER_PRESETS.map((preset) => ({
+    ...preset,
+    settings: { ...preset.settings },
+  })));
+  writeUserPresetStorage(next, storage);
+  return next;
 }
 
 export function saveUserPreset(
@@ -711,10 +737,6 @@ export function normalizePresetSettings(value: unknown): PresetSettings {
       1,
       1000,
     ),
-    audioTriggerSpreadMs: audioTriggerSpreadValue(
-      source.audioTriggerSpreadMs,
-      base.audioTriggerSpreadMs,
-    ),
     // Shapes and effects (round 10). Missing keys take the defaults, so a
     // preset saved before them always looks the same.
     particleShape: normalizeShape(source.particleShape) ?? base.particleShape,
@@ -867,10 +889,6 @@ function pinnedGroupValue(value: unknown): PresetPinnedGroup {
   return value === null || PINNED_GROUPS.includes(value as (typeof PINNED_GROUPS)[number])
     ? (value as PresetPinnedGroup)
     : null;
-}
-
-function audioTriggerSpreadValue(value: unknown, fallback: 0 | 16) {
-  return value === 0 || value === 16 ? value : fallback;
 }
 
 function finiteNumber(value: unknown, fallback: number) {

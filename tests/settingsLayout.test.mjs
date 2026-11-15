@@ -65,7 +65,8 @@ test('My Panel starts with the default items only when nothing was saved', () =>
   assert.deepEqual(parseMyPanelState(JSON.stringify({ items: [] }), known), { items: [] });
   assert.deepEqual(restoreDefaultMyPanelItems(known), { items: [...DEFAULT_MY_PANEL_ITEMS] });
   // Unknown default ids are dropped like any other unknown id.
-  assert.deepEqual(parseMyPanelState(null, KNOWN).items, ['audio.sound', 'mode.flash']);
+  assert.deepEqual(parseMyPanelState(null, KNOWN).items, ['mode.flash']);
+  assert.equal(DEFAULT_MY_PANEL_ITEMS.includes('audio.sound'), false);
 });
 
 test('toggling My Panel items keeps pick order and respects the cap', () => {

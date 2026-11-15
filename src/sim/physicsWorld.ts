@@ -447,7 +447,7 @@ export class DotpingPhysicsWorld {
       this.rapier.RigidBodyDesc.dynamic()
         .setTranslation(
           state ? clamp(state.x, radius, this.widthValue - radius) : this.widthValue * 0.5,
-          state ? clamp(state.y, radius, this.heightValue - radius) : this.heightValue * 0.68,
+          state ? clamp(state.y, radius, this.heightValue - radius) : this.heightValue * 0.5,
         )
         .setLinvel(state?.vx ?? 0, state?.vy ?? 0)
         .setCcdEnabled(true)

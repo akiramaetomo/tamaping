@@ -12,9 +12,9 @@ export type MyPanelState = {
 export const EMPTY_MY_PANEL: MyPanelState = { items: [] };
 
 // Starting items for a browser that has never saved My Panel.
-// Sound comes first as a stopgap: toggling it restores silent first-touch audio on iPad.
+// Audio `Sound` left the list on 2026-11-15 (user decision): the iPad sound
+// unlock badge covers the first-touch silence it was a stopgap for.
 export const DEFAULT_MY_PANEL_ITEMS: readonly string[] = [
-  'audio.sound',
   'mode.random',
   'mode.flash',
   'mode.gravityStrength',

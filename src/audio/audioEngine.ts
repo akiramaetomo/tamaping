@@ -26,7 +26,6 @@ type AudioTuning = Pick<
   | 'audioParticleFrequencyHz'
   | 'audioParticleFrequencySpread'
   | 'audioParticleDurationMs'
-  | 'audioTriggerSpreadMs'
 >;
 
 export type AudioDiagnostics = {

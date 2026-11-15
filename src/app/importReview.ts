@@ -1,5 +1,6 @@
 import {
   applyPresetImport,
+  applyPresetReplace,
   defaultImportChoices,
   type PresetImportChoice,
   type PresetImportOutcome,
@@ -8,16 +9,28 @@ import {
 } from '../sim/presetImport';
 import type { UserPreset } from '../sim/presets';
 
+export type ImportReviewMode = 'merge' | 'replace';
+
+// What the panel decided: the slots to store and the status line to show.
+export type ImportReviewResult = {
+  presets: Array<UserPreset | null>;
+  status: string;
+};
+
 // The import review panel: shows what a file would add, lets the user decide
-// same-name presets and the work in progress, and writes nothing until
-// `Import`. Resolves with the result to store, or null when cancelled.
+// same-name presets and the work in progress, or replace every user preset
+// with the file's, and writes nothing until the confirm button. Resolves with
+// the slots to store, or null when cancelled.
 export function openImportReview(
   host: HTMLElement,
   fileName: string,
   current: ReadonlyArray<UserPreset | null>,
   plan: PresetImportPlan,
-): Promise<PresetImportResult | null> {
+  incoming: readonly UserPreset[],
+): Promise<ImportReviewResult | null> {
   return new Promise((resolve) => {
+    let mode: ImportReviewMode = 'merge';
+    const replaceResult = applyPresetReplace(current, incoming);
     const choices = defaultImportChoices(plan);
     const freeSlots = current.filter((preset) => !preset).length;
 
@@ -38,6 +51,42 @@ export function openImportReview(
     const free = document.createElement('p');
     free.className = 'import-review__free';
     free.textContent = `Free slots: ${freeSlots}`;
+
+    const modeLabel = document.createElement('label');
+    modeLabel.className = 'import-review__mode';
+    const modeText = document.createElement('span');
+    modeText.textContent = 'Mode:';
+    const modeSelect = document.createElement('select');
+    modeSelect.className = 'hud__select import-review__choice import-review__mode-select';
+    modeSelect.setAttribute('aria-label', 'Import mode');
+    for (const [value, label] of [['merge', 'Merge'], ['replace', 'Replace all']]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      modeSelect.appendChild(option);
+    }
+    modeSelect.value = mode;
+    modeSelect.addEventListener('change', () => {
+      mode = modeSelect.value as ImportReviewMode;
+      refresh();
+    });
+    modeLabel.append(modeText, modeSelect);
+
+    const replaceNote = document.createElement('div');
+    replaceNote.className = 'import-review__replace';
+    const replaceSummary = document.createElement('p');
+    replaceSummary.className = 'import-review__replace-summary';
+    replaceSummary.textContent = replaceSummaryText(replaceResult.replaced, incoming.length);
+    const replaceWarning = document.createElement('p');
+    replaceWarning.className = 'import-review__warning';
+    replaceWarning.textContent = 'Saved presets that are not in the file are lost. Export them first to keep them.';
+    replaceNote.append(replaceSummary, replaceWarning);
+    if (plan.counts.working > 0) {
+      const workingNote = document.createElement('p');
+      workingNote.className = 'import-review__free';
+      workingNote.textContent = 'The work in progress is not used. Import it with Merge.';
+      replaceNote.append(workingNote);
+    }
 
     const list = document.createElement('div');
     list.className = 'import-review__list';
@@ -99,7 +148,8 @@ export function openImportReview(
 
     const bulk = document.createElement('label');
     bulk.className = 'import-review__bulk';
-    bulk.hidden = conflictSelects.length < 2;
+    const hasBulk = conflictSelects.length >= 2;
+    bulk.hidden = !hasBulk;
     const bulkText = document.createElement('span');
     bulkText.textContent = 'All same-name:';
     const bulkSelect = document.createElement('select');
@@ -151,24 +201,47 @@ export function openImportReview(
     confirm.textContent = 'Import';
     actions.append(cancel, confirm);
 
-    dialog.append(title, file, summary, free, bulk, list, message, actions);
+    dialog.append(title, file, modeLabel, summary, free, replaceNote, bulk, list, message, actions);
 
     let result = applyPresetImport(current, plan, choices);
     const refresh = () => {
+      const replacing = mode === 'replace';
+      summary.hidden = replacing;
+      free.hidden = replacing;
+      bulk.hidden = replacing || !hasBulk;
+      list.hidden = replacing;
+      replaceNote.hidden = !replacing;
+      confirm.textContent = replacing ? 'Replace' : 'Import';
+      dialog.classList.toggle('import-review--replace', replacing);
+
+      if (replacing) {
+        confirm.disabled = !replaceResult.ok || !replaceResult.changes;
+        message.textContent = !replaceResult.ok
+          ? `The file holds ${incoming.length} presets, more than ${current.length} slots`
+          : replaceResult.changes
+            ? ''
+            : 'The slots already hold these presets';
+        message.classList.toggle('import-review__message--blocked', !replaceResult.ok);
+        return;
+      }
+
       result = applyPresetImport(current, plan, choices);
       result.outcomes.forEach((outcome, index) => {
         rowViews[index].outcome.textContent = outcomeText(outcome);
       });
-      confirm.disabled = !result.ok || result.added + result.overwritten === 0;
-      message.textContent = result.ok
-        ? `Adds ${result.added}, overwrites ${result.overwritten}, skips ${result.skipped}`
-        : `Needs ${result.needsSlots} more ${result.needsSlots === 1 ? 'slot' : 'slots'}`;
+      const nothing = result.added + result.overwritten === 0;
+      confirm.disabled = !result.ok || nothing;
+      message.textContent = !result.ok
+        ? `Needs ${result.needsSlots} more ${result.needsSlots === 1 ? 'slot' : 'slots'}`
+        : importNeedsReview(plan)
+          ? `Adds ${result.added}, overwrites ${result.overwritten}, skips ${result.skipped}`
+          : `Nothing new (${plan.counts.saved} already saved)`;
       message.classList.toggle('import-review__message--blocked', !result.ok);
     };
     refresh();
 
     let settled = false;
-    const finish = (value: PresetImportResult | null) => {
+    const finish = (value: ImportReviewResult | null) => {
       if (settled) {
         return;
       }
@@ -181,8 +254,16 @@ export function openImportReview(
     };
     cancel.addEventListener('click', () => finish(null));
     confirm.addEventListener('click', () => {
-      if (result.ok) {
-        finish(result);
+      if (confirm.disabled) {
+        return;
+      }
+      if (mode === 'replace') {
+        finish({
+          presets: replaceResult.presets,
+          status: `Replaced ${replaceResult.replaced} with ${replaceResult.added}`,
+        });
+      } else if (result.ok) {
+        finish({ presets: result.presets, status: importStatusText(result) });
       }
     });
     // Escape closes a modal dialog without a click.
@@ -219,6 +300,20 @@ export function importSummaryText(plan: PresetImportPlan) {
 // The panel opens only when the file has something to decide or add.
 export function importNeedsReview(plan: PresetImportPlan) {
   return plan.counts.new + plan.counts.conflict + plan.counts.working > 0;
+}
+
+// The panel opens when Merge has something to decide or add, or when
+// `Replace all` would change the slots.
+export function importNeedsPanel(
+  plan: PresetImportPlan,
+  current: ReadonlyArray<UserPreset | null>,
+  incoming: readonly UserPreset[],
+) {
+  return importNeedsReview(plan) || applyPresetReplace(current, incoming).changes;
+}
+
+export function replaceSummaryText(saved: number, fromFile: number) {
+  return `Replaces ${saved} saved ${saved === 1 ? 'preset' : 'presets'} with ${fromFile} from the file`;
 }
 
 export function importStatusText(result: PresetImportResult) {

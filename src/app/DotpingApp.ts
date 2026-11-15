@@ -37,8 +37,7 @@ import {
 import { DEFAULT_PRESET_START, type PresetStart } from '../sim/presetStart';
 import { planPresetImport } from '../sim/presetImport';
 import {
-  importNeedsReview,
-  importStatusText,
+  importNeedsPanel,
   openImportReview,
 } from './importReview';
 import { StartControls } from './startControls';
@@ -303,6 +302,7 @@ export class DotpingApp {
   private myPanelItemsEl: HTMLDivElement | null = null;
   private myPanelHintEl: HTMLParagraphElement | null = null;
   private myPanelPinButton: HTMLButtonElement | null = null;
+  private myPanelDefaultButton: HTMLButtonElement | null = null;
   private settingsCards = new Map<SettingsCardId, HTMLElement>();
   private settingsTabs: ReturnType<typeof createSettingsTabs<SettingsTabId>> | null = null;
   private activeSettingsTab: SettingsTabId = 'my';
@@ -1667,14 +1667,19 @@ export class DotpingApp {
     this.myPanelPinButton = pin;
 
     const restoreDefault = document.createElement('button');
-    restoreDefault.className = 'hud__button hud__pin-button';
+    restoreDefault.className = 'hud__button hud__pin-button hud__my-default';
     restoreDefault.type = 'button';
     restoreDefault.textContent = 'Default';
-    restoreDefault.title = 'Restore the default My Panel items';
+    restoreDefault.title = 'Fill My Panel with the default items';
     restoreDefault.setAttribute('aria-label', restoreDefault.title);
     restoreDefault.addEventListener('click', () => {
+      // Only an empty panel can be filled, so defined rows are never overwritten.
+      if (this.shownMyPanel.items.length > 0) {
+        return;
+      }
       this.changeShownMyPanel(restoreDefaultMyPanelItems(this.controls.ids()));
     });
+    this.myPanelDefaultButton = restoreDefault;
 
     const items = document.createElement('div');
     items.className = 'hud__my-items';
@@ -2109,6 +2114,11 @@ export class DotpingApp {
     }
 
     myPanel?.classList.toggle('hud__group--pinned', showMyPanel);
+    // `Default` only fills an empty panel, and never shows on the pinned panel,
+    // where it sat next to the Pin button and replaced rows on a mistaken tap.
+    if (this.myPanelDefaultButton) {
+      this.myPanelDefaultButton.hidden = showMyPanel || this.shownMyPanel.items.length > 0;
+    }
     if (this.myPanelPinButton) {
       this.myPanelPinButton.textContent = myPanelPinned ? 'Pinned' : 'Pin';
       this.myPanelPinButton.title = myPanelPinned ? 'Unpin My Panel' : 'Pin My Panel to front';
@@ -2423,12 +2433,12 @@ export class DotpingApp {
       }
 
       const plan = planPresetImport(this.userPresets, incoming, working);
-      if (!importNeedsReview(plan)) {
+      if (!importNeedsPanel(plan, this.userPresets, incoming)) {
         this.setPresetStatus(`Nothing new (${plan.counts.saved} already saved)`);
         return;
       }
 
-      const result = await openImportReview(this.root, file.name, this.userPresets, plan);
+      const result = await openImportReview(this.root, file.name, this.userPresets, plan, incoming);
       if (!result) {
         this.setPresetStatus('Import cancelled');
         return;
@@ -2437,7 +2447,7 @@ export class DotpingApp {
       this.userPresets = storeUserPresets(result.presets);
       this.renderPresetOptions('custom');
       this.renderSaveDestinationOptions('');
-      this.setPresetStatus(importStatusText(result));
+      this.setPresetStatus(result.status);
     } catch {
       this.setPresetStatus('Import failed');
     } finally {
