@@ -17,6 +17,7 @@ import {
   STARTER_USER_PRESETS,
 } from '../.test-build/sim/presets.js';
 import { FACTORY_PRESET_DEFINITION_DATA } from '../.test-build/sim/factoryPresetData.js';
+import { FACTORY_PRESET_GENRES, FACTORY_PRESET_GENRE_FALLBACK } from '../.test-build/sim/factoryPresetGenres.js';
 import { DEFAULT_PRESET_START } from '../.test-build/sim/presetStart.js';
 import { applyPresetImport, planPresetImport } from '../.test-build/sim/presetImport.js';
 
@@ -25,44 +26,39 @@ function importInto(current, incoming) {
   return applyPresetImport(current, plan, []);
 }
 
-test('factory list follows the 2026-11 selection, numbered by its order', () => {
+test('factory list is ordered by genre, numbered by its order', () => {
   assert.equal(FACTORY_PRESETS.length, FACTORY_PRESET_DEFINITION_DATA.length);
-  assert.equal(FACTORY_PRESET_COUNT, 50);
+  assert.equal(FACTORY_PRESET_COUNT, 43);
   assert.equal(USER_PRESET_COUNT, 60);
-  // Fixed places from the 2026-11-16 polish (user decision); the rest is spread
-  // so that similar presets do not follow each other.
+  // Spec `Proposed Factory Preset Genres (2026-11-22)`: the genres in order,
+  // each preset in exactly one, and the list in the same order, so the numbers
+  // run from top to bottom of the drop-down.
+  assert.deepEqual(
+    FACTORY_PRESET_GENRES.map((genre) => `${genre.label}:${genre.presets.length}`),
+    ['Basics:5', 'Watch:7', 'Synth:4', 'Instruments:4', 'Toys:8', 'Creatures:8', 'Art:1', 'AI-made:6'],
+  );
+  assert.deepEqual(
+    FACTORY_PRESETS.map((preset) => preset.name.replace(/^\d+\. /, '')),
+    FACTORY_PRESET_GENRES.flatMap((genre) => genre.presets),
+  );
+  assert.deepEqual(
+    FACTORY_PRESETS.map((preset) => preset.genre),
+    FACTORY_PRESET_GENRES.flatMap((genre) => genre.presets.map(() => genre.label)),
+  );
+  assert.equal(FACTORY_PRESETS.some((preset) => preset.genre === FACTORY_PRESET_GENRE_FALLBACK), false);
   assert.equal(FACTORY_PRESETS[0].name, '1. Hello Ping');
   assert.equal(FACTORY_PRESETS[0].formationLabel, 'Hello');
-  assert.equal(FACTORY_PRESETS[1].name, '2. Blue Sand 2K');
   assert.equal(FACTORY_PRESETS[2].name, '3. Hello Tama');
   assert.deepEqual(FACTORY_PRESETS[2].designViewport, { width: 537, height: 537 });
-  assert.equal(FACTORY_PRESETS[3].name, '4. Glow Star 1K');
-  assert.equal(FACTORY_PRESETS[13].name, '14. Gyu-Pang☆');
-  assert.equal(FACTORY_PRESETS[33].name, '34. Pink Sand ART');
-  assert.equal(FACTORY_PRESETS[9].name, '10. Glow Sparkle');
-  assert.equal(FACTORY_PRESETS[9].formationLabel, 'Glow Sparkle');
-  assert.equal(FACTORY_PRESETS[35].name, '36. Laser Star');
-  assert.equal(FACTORY_PRESETS[38].name, '39. Playing with Fish at Night');
-  assert.equal(FACTORY_PRESETS[39].name, '40. Black Shoal');
-  // The ten agent presets (2026-11-16) follow at 41-50 (user decision). The
-  // agent's mark is in the name only: the Name formation draws the label.
-  assert.deepEqual(
-    FACTORY_PRESETS.slice(40).map((preset) => preset.name),
-    [
-      '41. 🤖 Giant Rings',
-      '42. 🤖 Snow Footprints',
-      '43. 🤖 Star Slalom',
-      '44. 🤖 Green Vine',
-      '45. 🤖 Light Painting',
-      '46. 🤖 Melting Word',
-      '47. 🤖 Wind Chimes',
-      '48. 🤖 Pond Scatter',
-      '49. 🤖 Dust Planet',
-      '50. 🤖 Lone Comet',
-    ],
-  );
+  assert.equal(FACTORY_PRESETS[7].formationLabel, 'Glow Sparkle');
+  // Deleted on 2026-11-22 (user decision).
+  for (const gone of ['🤖 Light Painting', '🤖 Melting Word', '🤖 Pond Scatter', '🤖 Dust Planet']) {
+    assert.equal(FACTORY_PRESET_DEFINITION_DATA.some((entry) => entry.name === gone), false, gone);
+  }
+  // The agent presets close the list. The agent's mark is in the name only:
+  // the Name formation draws the label.
   FACTORY_PRESETS.forEach((preset, index) => {
-    assert.equal(preset.name.includes('🤖'), index >= 40, preset.name);
+    assert.equal(preset.name.includes('🤖'), index >= 37, preset.name);
     assert.equal(preset.formationLabel?.includes('🤖') ?? false, false, preset.name);
     assert.ok(preset.name.length <= 40, preset.name);
   });
@@ -73,8 +69,8 @@ test('factory list follows the 2026-11 selection, numbered by its order', () => 
     assert.equal('audioTriggerSpreadMs' in preset.settings, false, preset.name);
     assert.notEqual(preset.start.ballY, 68, preset.name);
   });
-  // A row without a start takes the default start.
-  assert.deepEqual(FACTORY_PRESETS[13].start, DEFAULT_PRESET_START);
+  // A row without a start takes the default start (Gyu-Pang☆).
+  assert.deepEqual(FACTORY_PRESETS[22].start, DEFAULT_PRESET_START);
 });
 
 test('every factory entry is its source preset after normalization', () => {
@@ -135,7 +131,7 @@ test('current preset export preserves tunable settings and excludes runtime togg
       particleShapeOpacity: 0.5,
       ballFxTrailLength: 2,
       particleFxAfterglowStrength: 1.5,
-      particleShapeTurn: true,
+      particleShapeTurn: 'spin',
       particleFxRays: true,
       particleFxRaysCurve: -0.5,
       ballFxRaysCurve: 0,
@@ -163,7 +159,7 @@ test('current preset export preserves tunable settings and excludes runtime togg
   const stored = exportFile.presets[0].settings;
   assert.equal(stored.particleShape, 'sparkle');
   assert.equal(stored.ballShape, 'fish');
-  assert.equal(stored.particleShapeTurn, true);
+  assert.equal(stored.particleShapeTurn, 'spin');
   assert.equal(stored.particleFxRays, true);
   assert.equal(stored.particleFxRaysCurve, -0.5);
   assert.equal(stored.ballFxRaysCurve, 0);
@@ -457,4 +453,15 @@ test('current preset export round-trips through import unchanged', () => {
 
   assert.deepEqual(imported, exportFile.presets[0]);
   assert.deepEqual(imported.settings, presetFromSettings(tuned, 'my'));
+});
+
+test('shape Turn reads the old boolean and the three choices', async () => {
+  const { shapeTurnValue } = await import('../.test-build/sim/presets.js');
+  assert.equal(shapeTurnValue(true, 'off'), 'motion');
+  assert.equal(shapeTurnValue(false, 'motion'), 'off');
+  for (const value of ['off', 'motion', 'spin']) {
+    assert.equal(shapeTurnValue(value, 'off'), value);
+  }
+  assert.equal(shapeTurnValue('wobble', 'motion'), 'motion');
+  assert.equal(shapeTurnValue(undefined, 'spin'), 'spin');
 });

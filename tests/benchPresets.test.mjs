@@ -7,6 +7,7 @@ import {
   benchIdFromParams,
   benchPresetForValue,
   benchPresetValue,
+  factoryBenchFromParams,
 } from '../.test-build/sim/benchPresets.js';
 import {
   designViewportForPresetValue,
@@ -20,10 +21,10 @@ import { DEFAULT_PRESET_START } from '../.test-build/sim/presetStart.js';
 
 const byId = (id) => BENCH_PRESETS.find((preset) => preset.id === id);
 
-test('bench presets define the four agreed scenes at 1000 dots', () => {
-  assert.deepEqual(BENCH_PRESETS.map((preset) => preset.id), ['A', 'B', 'C', 'D']);
+test('bench presets define the agreed scenes (E is the 2000-dot crowd)', () => {
+  assert.deepEqual(BENCH_PRESETS.map((preset) => preset.id), ['A', 'B', 'C', 'D', 'E']);
   for (const preset of BENCH_PRESETS) {
-    assert.equal(preset.settings.particleCount, 1000);
+    assert.equal(preset.settings.particleCount, preset.id === 'E' ? 2000 : 1000);
     assert.equal(preset.settings.pinnedGroup, null);
     assert.ok(preset.name.startsWith('⏱ '));
   }
@@ -36,6 +37,10 @@ test('bench presets define the four agreed scenes at 1000 dots', () => {
   assert.equal(byId('B').settings.gravityMode, 'gravity');
   assert.equal(byId('B').settings.gravityStrength, 3);
   assert.equal(byId('B').settings.particleRadius, 8);
+
+  assert.equal(byId('E').settings.collisionMode, 'collision-physical');
+  assert.equal(byId('E').settings.gravityMode, 'gravity');
+  assert.equal(byId('E').settings.gravityStrength, 3);
 
   assert.equal(byId('C').settings.collisionMode, 'independence-overlapping');
   assert.equal(byId('C').settings.gravityMode, 'none');
@@ -73,7 +78,18 @@ test('bench query parameter accepts known ids case-insensitively', () => {
   assert.equal(id('?bench=B'), 'B');
   assert.equal(id('?bench=c'), 'C');
   assert.equal(id('?bench=%20d%20'), 'D');
-  assert.equal(id('?bench=E'), null);
+  assert.equal(id('?bench=F'), null);
   assert.equal(id('?bench='), null);
   assert.equal(id(''), null);
+});
+
+test('?bench=F09 picks a factory preset to measure as it ships', () => {
+  const pick = (search) => factoryBenchFromParams(new URLSearchParams(search));
+  assert.deepEqual(pick('?bench=F09'), { label: 'F09', value: `factory:${FACTORY_PRESETS[8].id}` });
+  assert.deepEqual(pick('?bench=f9'), { label: 'F09', value: `factory:${FACTORY_PRESETS[8].id}` });
+  assert.equal(pick(`?bench=F${FACTORY_PRESET_COUNT}`)?.label, `F${FACTORY_PRESET_COUNT}`);
+  assert.equal(pick(`?bench=F${FACTORY_PRESET_COUNT + 1}`), null);
+  assert.equal(pick('?bench=F0'), null);
+  assert.equal(pick('?bench=B'), null);
+  assert.equal(pick(''), null);
 });

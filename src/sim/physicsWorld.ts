@@ -13,12 +13,53 @@ import {
   startBallPosition,
   type PresetStart,
 } from './presetStart';
-import type { ColliderLayout, CollisionMode, DotpingSettings } from './settings';
+import {
+  OverlapParticles,
+  type OverlapBall,
+  type OverlapImpact,
+  type OverlapParams,
+} from './overlapParticles';
+import {
+  FreeSpotFinder,
+  OverlapSeparator,
+  PHYSICAL_ENTRY_FRAME_MS,
+  PHYSICAL_ENTRY_HANDOVER,
+  PHYSICAL_ENTRY_MAX_FRAMES,
+  PHYSICAL_FLOW_HEADROOM,
+  PHYSICAL_FLOW_PER_STEP,
+  PHYSICAL_REST_COVER,
+  findCoveredDots,
+  needsPhysicalSpread,
+  overlapEstimate,
+  physicalCapacity,
+  physicalEntryBudget,
+  physicalTimeLimitMs,
+} from './physicalEntry';
+import type { ColliderLayout, CollisionMode, DotpingSettings, OverlapEngine } from './settings';
 
 type RapierModule = any;
 
 type BodyRole = 'particle' | 'control' | 'wall-x' | 'wall-y';
-type BodyState = { x: number; y: number; vx: number; vy: number };
+// `angle` (rad) and `angvel` (rad/s) are the body's turn and spin; missing
+// means 0 (a fresh dot).
+type BodyState = { x: number; y: number; vx: number; vy: number; angle?: number; angvel?: number };
+// A dot that rests (not simulated, not drawn) under a simulated host dot, at
+// a fixed offset from it. `id` and `host` are dot IDs. `angle` is the dot's
+// own turn when it went to rest, kept while it rests, so the spin pattern
+// does not jump when it comes back.
+type RestingDot = { id: number; host: number; dx: number; dy: number; angle: number };
+// `Physical collision` entry state for the debug overlay: the TS spread of a
+// packed crowd, then resting dots being released, waiting for step headroom,
+// or waiting because the field has no free spot.
+export type PhysicalEntryState = 'spreading' | 'flow-out' | 'at-limit' | 'field-full';
+// Smoothing of the measured Rapier step time (share of each new step).
+const STEP_COST_SMOOTHING = 0.2;
+// Steps left out of the step time after a build or a change of the dot set,
+// so the first step's setup cost does not count.
+const STEP_COST_SETTLE_STEPS = 3;
+// Steps to wait after a time-limit search found no covered dot, or after
+// the flow-out found no free spot.
+const LIMIT_RETRY_STEPS = 30;
 type PreservedState = {
   control: BodyState;
   particles: BodyState[];
@@ -44,6 +85,19 @@ export type StepMetrics = {
   lengthUnit: number;
   colliderLayout: ColliderLayout;
   colliderCount: number;
+  // Engine that moved the particles this step (`js` only with `?ov=js` in
+  // `Independent overlap`).
+  overlapEngine?: OverlapEngine;
+  // `Physical collision` entry (see `physicalEntry.ts`): set while a packed
+  // crowd is spread, or while dots rest.
+  physicalEntry?: PhysicalEntryState;
+  // Dots resting under others: not simulated, not drawn.
+  restingDots?: number;
+  // Set only with `?entry=held` (the first version of the entry).
+  physicalEntryMode?: 'held';
+  // Target frame rate behind the physics time limit (`?physfps=`), set
+  // while `physicalEntry` is.
+  physicalTargetFps?: number;
 };
 
 export type ParticleDiagnostics = {
@@ -63,6 +117,9 @@ export type DotSnapshot = {
   vy: number;
   radius: number;
   speed: number;
+  // Turned angle in radians (Rapier `rotation()`). For particles it is read
+  // only while `readParticleAngles` is on, and is 0 otherwise.
+  angle: number;
   visible: boolean;
 };
 
@@ -93,10 +150,73 @@ function isWallRole(role: BodyRole) {
   return role === 'wall-x' || role === 'wall-y';
 }
 
+// One trial-engine particle behind the small part of Rapier's body API that
+// the shared velocity rules use, so gravity, linking, weave, starts and
+// snapshots work unchanged on both engines.
+class OverlapParticleBody {
+  constructor(
+    private readonly store: OverlapParticles,
+    private readonly index: number,
+  ) {}
+
+  translation() {
+    return { x: this.store.x[this.index], y: this.store.y[this.index] };
+  }
+
+  linvel() {
+    return { x: this.store.vx[this.index], y: this.store.vy[this.index] };
+  }
+
+  setTranslation(position: { x: number; y: number }) {
+    this.store.x[this.index] = position.x;
+    this.store.y[this.index] = position.y;
+  }
+
+  setLinvel(velocity: { x: number; y: number }) {
+    this.store.vx[this.index] = velocity.x;
+    this.store.vy[this.index] = velocity.y;
+  }
+
+  // Spin in rad/s and the turned angle, like Rapier's `angvel()` / `rotation()`.
+  angvel() {
+    return this.store.angvel[this.index];
+  }
+
+  rotation() {
+    return this.store.angle[this.index];
+  }
+
+  // Damping is read from the settings every step.
+  setLinearDamping() {}
+}
+
 export class DotpingPhysicsWorld {
   private world!: any;
   private eventQueue!: any;
   private particles: any[] = [];
+  // Particle angles cost one WASM read per body on Rapier, so the snapshot
+  // reads them only while something draws them (shape `Turn` = `Spin`).
+  readParticleAngles = false;
+  // Set while the trial engine moves the particles (`?ov=js`).
+  private overlap: OverlapParticles | null = null;
+  // `Physical collision` entry (spec `Safe Entry Into Physical Collision`):
+  // frames spent spreading a packed crowd with the TS engine (-1 when not
+  // spreading); the ID of each simulated dot, aligned with `particles`; the
+  // resting dots; Rapier's smoothed step time (-1 until measured); steps
+  // left out of it; steps to wait before the next time-limit search and before
+  // the next free-spot search; and what the resting dots wait for.
+  private entryFrames = -1;
+  private ids: number[] = [];
+  private resting: RestingDot[] = [];
+  // Legacy entry (`?entry=held`): tail dots held off the field, with their
+  // states as they were when held.
+  private held: Array<{ id: number; state: BodyState }> = [];
+  private stepCostMs = -1;
+  private settleSteps = 0;
+  private limitWait = 0;
+  private flowWait = 0;
+  private restState: 'flow-out' | 'at-limit' | 'field-full' = 'at-limit';
+  private readonly separator = new OverlapSeparator();
   private particleWallColliders: any[] = [];
   private particleContactColliders: any[] = [];
   private controlBall!: any;
@@ -134,6 +254,30 @@ export class DotpingPhysicsWorld {
 
   get colliderLayout() {
     return this.settings.colliderLayout;
+  }
+
+  get overlapEngine(): OverlapEngine {
+    return this.overlap ? 'js' : 'rapier';
+  }
+
+  get physicalEntry(): PhysicalEntryState | null {
+    if (this.entryFrames >= 0) {
+      return 'spreading';
+    }
+    if (this.resting.length > 0) {
+      return this.restState;
+    }
+    return null;
+  }
+
+  // Dots resting under others (not simulated, not drawn); `particleCount`
+  // counts the simulated ones.
+  get restingParticleCount() {
+    return this.resting.length + this.held.length;
+  }
+
+  private get legacyEntry() {
+    return this.settings.physicalEntryMode === 'held';
   }
 
   get colliderCount() {
@@ -183,6 +327,7 @@ export class DotpingPhysicsWorld {
   }
 
   arrangeFlashParticles() {
+    this.wakeRestingDots();
     if (this.particles.length <= 0) {
       return;
     }
@@ -195,6 +340,7 @@ export class DotpingPhysicsWorld {
       particle.setTranslation({ x: position.x, y: position.y }, true);
       particle.setLinvel({ x: position.tx * pulse, y: position.ty * pulse }, true);
     }
+    this.guardPhysicalEntry();
   }
 
   // Puts the scene in a preset's start state. The Ball goes first, because the
@@ -205,6 +351,7 @@ export class DotpingPhysicsWorld {
     nameTargets: ParticleFormationTarget[] | null = null,
     random: () => number = Math.random,
   ) {
+    this.wakeRestingDots();
     const radius = this.settings.controlBallRadius;
     const ball = startBallPosition(start, this.widthValue, this.heightValue, radius);
     // An absent Ball (`Touch`) keeps its place but must not drift while hidden.
@@ -245,10 +392,12 @@ export class DotpingPhysicsWorld {
       particle.setTranslation({ x, y }, true);
       particle.setLinvel({ x: velocity.vx, y: velocity.vy }, true);
     }
+    this.guardPhysicalEntry();
   }
 
   // Same jittered-grid scatter that a freshly built scene starts with.
   arrangeRandomParticles() {
+    this.wakeRestingDots();
     if (this.particles.length <= 0) {
       return;
     }
@@ -261,9 +410,11 @@ export class DotpingPhysicsWorld {
       particle.setTranslation({ x: position.x, y: position.y }, true);
       particle.setLinvel({ x: position.vx, y: position.vy }, true);
     }
+    this.guardPhysicalEntry();
   }
 
   arrangeParticlesToTargets(targets: ParticleFormationTarget[]) {
+    this.wakeRestingDots();
     if (this.particles.length <= 0 || targets.length <= 0) {
       return false;
     }
@@ -282,6 +433,7 @@ export class DotpingPhysicsWorld {
       particle.setLinvel({ x: target.vx, y: target.vy }, true);
     }
 
+    this.guardPhysicalEntry();
     return true;
   }
 
@@ -304,18 +456,47 @@ export class DotpingPhysicsWorld {
     const preStartedAt = performance.now();
     this.world.timestep = dt;
     this.driveControlBall(dt);
-    const previousVelocities = this.captureParticleVelocities();
-
-    this.applyVelocityCombi(dt, previousVelocities);
+    this.applyVelocityCombi(dt);
     this.applyControlGravity(dt);
     this.applyBallWeave(dt);
 
     const startedAt = performance.now();
+    const overlap = this.overlap;
+    if (overlap) {
+      const ballVelocity = overlap.solveBall(dt, this.overlapBall(), this.overlapParams());
+      if (ballVelocity) {
+        this.controlBall.setLinvel({ x: ballVelocity.vx, y: ballVelocity.vy }, true);
+        this.controlBall.setAngvel(ballVelocity.angvel, true);
+        if (ballVelocity.dx !== 0 || ballVelocity.dy !== 0) {
+          const position = this.controlBall.translation();
+          this.controlBall.setTranslation(
+            { x: position.x + ballVelocity.dx, y: position.y + ballVelocity.dy },
+            true,
+          );
+        }
+      }
+    }
     this.world.step(this.eventQueue);
+    const overlapImpacts: OverlapImpact[] = [];
+    if (overlap) {
+      overlap.integrate(dt, this.overlapBall(), this.overlapParams(), overlapImpacts);
+    }
     const endedAt = performance.now();
     this.containControlBall();
     this.containParticles();
     const impacts = this.collectImpacts();
+    for (const impact of overlapImpacts) {
+      if (impact.energy > 12) {
+        impacts.push(impact);
+      }
+    }
+    const spreading = this.entryFrames >= 0;
+    if (spreading) {
+      this.advancePhysicalEntry();
+    } else if (!overlap && this.settings.collisionMode === 'collision-physical' && !this.legacyEntry) {
+      this.keepPhysicsTimeLimit(endedAt - startedAt);
+    }
+    const entry = spreading ? 'spreading' : this.physicalEntry;
     return {
       impacts,
       metrics: {
@@ -325,24 +506,348 @@ export class DotpingPhysicsWorld {
         lengthUnit: this.settings.rapierLengthUnit,
         colliderLayout: this.settings.colliderLayout,
         colliderCount: this.colliderCount,
+        overlapEngine: overlap ? 'js' : 'rapier',
+        ...(entry ? { physicalEntry: entry } : {}),
+        ...(this.restingParticleCount > 0 ? { restingDots: this.restingParticleCount } : {}),
+        ...(this.legacyEntry ? { physicalEntryMode: 'held' as const } : {}),
+        ...(entry && !this.legacyEntry ? { physicalTargetFps: this.settings.physicalTargetFps } : {}),
       },
     };
   }
 
+  // One frame of the spread: push overlapping particles apart for a bounded
+  // time; dots still covered after it rest. Rapier takes over once the crowd
+  // has some room. When the frames run out, every dot that still overlaps a
+  // dot drawn above it rests first, so Rapier never receives a packed crowd.
+  private advancePhysicalEntry() {
+    const store = this.overlap;
+    if (!store) {
+      this.entryFrames = -1;
+      return;
+    }
+    const radius = this.settings.particleRadius;
+    const target = physicalEntryBudget(store.count) * PHYSICAL_ENTRY_HANDOVER;
+    const startedAt = performance.now();
+    let estimate: number;
+    do {
+      this.separator.pass(
+        store.x, store.y, store.count, radius, this.widthValue, this.heightValue, store.vx, store.vy,
+      );
+      estimate = overlapEstimate(store.x, store.y, store.count, radius);
+    } while (estimate > target && performance.now() - startedAt < PHYSICAL_ENTRY_FRAME_MS);
+    this.entryFrames += 1;
+
+    if (this.legacyEntry) {
+      // The first version: hand over whatever the spread reached.
+      if (estimate <= target || this.entryFrames >= PHYSICAL_ENTRY_MAX_FRAMES) {
+        this.handOverToRapier();
+      }
+      return;
+    }
+    if (estimate > target) {
+      const last = this.entryFrames >= PHYSICAL_ENTRY_MAX_FRAMES;
+      this.restDots(
+        findCoveredDots(store.x, store.y, this.ids, store.count, radius, last ? 1 : PHYSICAL_REST_COVER),
+        store.x,
+        store.y,
+      );
+      if (!last) {
+        return;
+      }
+    }
+    this.handOverToRapier();
+  }
+
+  // The spread is done: the simulated dots become Rapier bodies in the same
+  // world (walls and Ball stay), and the resting dots keep their hosts.
+  private handOverToRapier() {
+    const store = this.overlap;
+    this.overlap = null;
+    this.entryFrames = -1;
+    this.particles = [];
+    this.particleWallColliders = [];
+    this.particleContactColliders = [];
+    if (store) {
+      for (let index = 0; index < store.count; index += 1) {
+        this.addRapierParticle(
+          store.x[index], store.y[index], store.vx[index], store.vy[index], store.angle[index], store.angvel[index],
+        );
+      }
+    }
+    this.restartStepCost();
+  }
+
+  private restartStepCost() {
+    this.stepCostMs = -1;
+    this.settleSteps = STEP_COST_SETTLE_STEPS;
+    this.limitWait = 0;
+    this.flowWait = 0;
+    this.restState = 'at-limit';
+  }
+
+  // Physics time limit in `Physical collision`: above it, covered dots
+  // rest; well below it, resting dots flow out. Between the two nothing
+  // changes, so the count does not swing.
+  private keepPhysicsTimeLimit(costMs: number) {
+    if (this.settleSteps > 0) {
+      this.settleSteps -= 1;
+      return;
+    }
+    this.stepCostMs = this.stepCostMs < 0
+      ? costMs
+      : this.stepCostMs + (costMs - this.stepCostMs) * STEP_COST_SMOOTHING;
+    const cost = this.stepCostMs;
+    const limitMs = physicalTimeLimitMs(this.settings.physicalTargetFps);
+    if (cost >= limitMs * PHYSICAL_FLOW_HEADROOM) {
+      this.restState = 'at-limit';
+    }
+    if (cost > limitMs) {
+      if (this.limitWait > 0) {
+        this.limitWait -= 1;
+        return;
+      }
+      // About as many as bring the step back under the limit, at most half.
+      const count = this.particles.length;
+      const share = Math.min(1 - limitMs / cost, 0.5);
+      const limit = Math.max(1, Math.ceil(count * share));
+      const { xs, ys } = this.particlePositionArrays();
+      const rested = this.restDots(
+        findCoveredDots(xs, ys, this.ids, count, this.settings.particleRadius, PHYSICAL_REST_COVER, limit),
+        xs,
+        ys,
+      );
+      if (rested > 0) {
+        this.restartStepCost();
+      } else {
+        this.limitWait = LIMIT_RETRY_STEPS;
+      }
+      return;
+    }
+    if (this.resting.length > 0 && cost < limitMs * PHYSICAL_FLOW_HEADROOM) {
+      if (this.flowWait > 0) {
+        this.flowWait -= 1;
+        return;
+      }
+      const { released, full } = this.releaseRestingDots(PHYSICAL_FLOW_PER_STEP);
+      if (full) {
+        this.flowWait = LIMIT_RETRY_STEPS;
+      }
+      this.restState = released > 0 ? 'flow-out' : 'field-full';
+    }
+  }
+
+  // Positions of the simulated dots, in `particles` order.
+  private particlePositionArrays() {
+    const count = this.particles.length;
+    const xs = new Float64Array(count);
+    const ys = new Float64Array(count);
+    for (let index = 0; index < count; index += 1) {
+      const position = this.particles[index].translation();
+      xs[index] = position.x;
+      ys[index] = position.y;
+    }
+    return { xs, ys };
+  }
+
+  // Puts the simulated dots that `host` marks (per `particles` index, the
+  // index of the covering dot, or -1) to rest under their hosts. Dots that
+  // already rested under a dot that now rests move to its host. Returns the
+  // number of dots put to rest.
+  private restDots(host: Int32Array, xs: ArrayLike<number>, ys: ArrayLike<number>) {
+    const moved = new Map<number, RestingDot>();
+    for (let index = 0; index < host.length; index += 1) {
+      const over = host[index];
+      if (over >= 0) {
+        moved.set(this.ids[index], {
+          id: this.ids[index],
+          host: this.ids[over],
+          dx: xs[index] - xs[over],
+          dy: ys[index] - ys[over],
+          angle: this.particles[index].rotation(),
+        });
+      }
+    }
+    if (moved.size === 0) {
+      return 0;
+    }
+    for (const dot of this.resting) {
+      const hostRest = moved.get(dot.host);
+      if (hostRest) {
+        dot.host = hostRest.host;
+        dot.dx += hostRest.dx;
+        dot.dy += hostRest.dy;
+      }
+    }
+    this.resting.push(...moved.values());
+
+    const keep: number[] = [];
+    for (let index = 0; index < host.length; index += 1) {
+      if (host[index] < 0) {
+        keep.push(index);
+      }
+    }
+    const store = this.overlap;
+    if (store) {
+      const next = new OverlapParticles(keep.length);
+      this.particles = keep.map((index, slot) => {
+        next.set(slot, store.x[index], store.y[index], store.vx[index], store.vy[index]);
+        next.angle[slot] = store.angle[index];
+        next.angvel[slot] = store.angvel[index];
+        return new OverlapParticleBody(next, slot);
+      });
+      this.overlap = next;
+    } else {
+      for (let index = 0; index < host.length; index += 1) {
+        if (host[index] >= 0) {
+          this.colliderRoles.delete(this.particleWallColliders[index].handle);
+          this.colliderRoles.delete(this.particleContactColliders[index].handle);
+          this.world.removeRigidBody(this.particles[index]);
+        }
+      }
+      this.particles = keep.map((index) => this.particles[index]);
+      this.particleWallColliders = keep.map((index) => this.particleWallColliders[index]);
+      this.particleContactColliders = keep.map((index) => this.particleContactColliders[index]);
+    }
+    this.ids = keep.map((index) => this.ids[index]);
+    return moved.size;
+  }
+
+  // Releases up to `limit` resting dots into Rapier, each at the free spot
+  // nearest to where it rests, with its host's velocity. The last to rest
+  // come out first. Stops when the field has no free spot left (`full`).
+  private releaseRestingDots(limit: number) {
+    const { xs, ys } = this.particlePositionArrays();
+    const slotOf = new Map<number, number>();
+    this.ids.forEach((id, index) => slotOf.set(id, index));
+    const ball = this.controlBallPresent
+      ? { ...this.controlBall.translation(), radius: this.settings.controlBallRadius }
+      : null;
+    const finder = new FreeSpotFinder(
+      xs, ys, xs.length, this.settings.particleRadius, this.widthValue, this.heightValue, ball,
+    );
+    let released = 0;
+    let full = false;
+    while (released < limit && this.resting.length > 0) {
+      const dot = this.resting[this.resting.length - 1];
+      // A host is always simulated; without one, the dot comes out near the
+      // middle of the field.
+      const slot = slotOf.get(dot.host);
+      const spot = slot === undefined
+        ? finder.find(this.widthValue / 2, this.heightValue / 2)
+        : finder.find(xs[slot] + dot.dx, ys[slot] + dot.dy);
+      if (!spot) {
+        full = true;
+        break;
+      }
+      this.resting.pop();
+      const host = slot === undefined ? null : this.particles[slot];
+      const velocity = host ? host.linvel() : { x: 0, y: 0 };
+      this.addRapierParticle(spot.x, spot.y, velocity.x, velocity.y, dot.angle, host ? host.angvel() : 0);
+      this.ids.push(dot.id);
+      released += 1;
+    }
+    return { released, full };
+  }
+
+  // Brings every resting dot back and restores ID order, so a start or an
+  // arrangement places all `Count` dots in order. The crowd is measured
+  // again afterwards (`guardPhysicalEntry`).
+  private wakeRestingDots() {
+    const ordered = this.ids.every((id, index) => id === index);
+    if (this.resting.length === 0 && this.held.length === 0 && ordered) {
+      return;
+    }
+    this.rebuild(this.captureState(), { plain: true });
+  }
+
+  // After a start or arrangement moved Rapier particles: a packed result
+  // goes through the spread like any other entry.
+  private guardPhysicalEntry() {
+    if (
+      this.settings.collisionMode !== 'collision-physical' ||
+      this.overlap ||
+      this.particles.length <= 1
+    ) {
+      return;
+    }
+    const xs = new Float64Array(this.particles.length);
+    const ys = new Float64Array(this.particles.length);
+    this.particles.forEach((particle, index) => {
+      const position = particle.translation();
+      xs[index] = position.x;
+      ys[index] = position.y;
+    });
+    if (needsPhysicalSpread(xs, ys, xs.length, this.settings.particleRadius)) {
+      this.rebuild(this.captureState());
+    }
+  }
+
+  // The Ball as the trial engine sees it; null while it is absent (`Touch`).
+  private overlapBall(): OverlapBall | null {
+    if (!this.controlBallPresent) {
+      return null;
+    }
+    const position = this.controlBall.translation();
+    const velocity = this.controlBall.linvel();
+    return {
+      x: position.x,
+      y: position.y,
+      vx: velocity.x,
+      vy: velocity.y,
+      radius: this.settings.controlBallRadius,
+      mass: this.settings.controlBallMass,
+      friction: this.settings.controlBallFriction,
+      angvel: this.controlBall.angvel(),
+    };
+  }
+
+  private overlapParams(): OverlapParams {
+    return {
+      width: this.widthValue,
+      height: this.heightValue,
+      radius: this.settings.particleRadius,
+      mass: this.settings.particleMass,
+      friction: this.settings.particleFriction,
+      restitution: this.material().contactRestitution,
+      wallRestitution: this.settings.wallRestitution,
+      linearDamping: this.settings.particleLinearDamping,
+    };
+  }
+
+  // Particles in ID order, so each dot keeps its colour and drawing order.
+  // Resting dots are included at their hosts with `visible: false`.
   snapshot(): WorldSnapshot {
-    const particles = this.particles.map((body) => {
+    const angles = this.readParticleAngles;
+    const radius = this.settings.particleRadius;
+    const particles: DotSnapshot[] = new Array(this.particles.length + this.resting.length + this.held.length);
+    for (let index = 0; index < this.particles.length; index += 1) {
+      const body = this.particles[index];
       const pos = body.translation();
       const vel = body.linvel();
-      return {
+      particles[this.ids[index]] = {
         x: pos.x,
         y: pos.y,
         vx: vel.x,
         vy: vel.y,
-        radius: this.settings.particleRadius,
+        radius,
         speed: Math.hypot(vel.x, vel.y),
+        angle: angles ? body.rotation() : 0,
         visible: true,
       };
-    });
+    }
+    for (const dot of this.resting) {
+      const host = particles[dot.host];
+      particles[dot.id] = { ...host, x: host.x + dot.dx, y: host.y + dot.dy, angle: dot.angle, visible: false };
+    }
+    for (const { id, state } of this.held) {
+      particles[id] = {
+        ...state,
+        radius,
+        speed: Math.hypot(state.vx, state.vy),
+        angle: state.angle ?? 0,
+        visible: false,
+      };
+    }
 
     const controlPosition = this.controlBall.translation();
     const controlVelocity = this.controlBall.linvel();
@@ -357,27 +862,41 @@ export class DotpingPhysicsWorld {
         vy: controlVelocity.y,
         radius: this.settings.controlBallRadius,
         speed: Math.hypot(controlVelocity.x, controlVelocity.y),
+        angle: this.controlBall.rotation(),
         visible: this.controlBallPresent,
       },
       collisionMode: this.settings.collisionMode,
     };
   }
 
-  private rebuild(preserved?: PreservedState) {
+  // `entry.plain`: every dot becomes a Rapier body without measuring the
+  // crowd (a start or arrangement measures it after moving the dots).
+  private rebuild(preserved?: PreservedState, entry?: { plain: boolean }) {
     this.colliderRoles.clear();
     this.particles = [];
+    this.overlap = null;
+    this.entryFrames = -1;
+    this.ids = [];
+    this.resting = [];
+    this.held = [];
+    this.restartStepCost();
     this.particleWallColliders = [];
     this.particleContactColliders = [];
     this.wallColliders = [];
     this.controlWallCollider = null;
     this.controlContactCollider = null;
+    // Rapier worlds live in WASM memory, which the JS garbage collector never
+    // reclaims; without `free()` every resize, rebuild or preset change leaked
+    // a whole world. Nothing keeps a handle into the old world past this point.
+    this.eventQueue?.free();
+    this.world?.free();
     this.world = new this.rapier.World({ x: 0, y: 0 });
     this.world.lengthUnit = this.settings.rapierLengthUnit;
     this.eventQueue = new this.rapier.EventQueue(true);
 
     this.createWalls();
     this.createControlBall(preserved?.control);
-    this.createParticles(preserved?.particles);
+    this.createParticles(preserved?.particles, entry);
     this.syncControlBallPresence();
     this.particleDiagnostics = this.measureParticles(0);
   }
@@ -449,7 +968,9 @@ export class DotpingPhysicsWorld {
           state ? clamp(state.x, radius, this.widthValue - radius) : this.widthValue * 0.5,
           state ? clamp(state.y, radius, this.heightValue - radius) : this.heightValue * 0.5,
         )
+        .setRotation(state?.angle ?? 0)
         .setLinvel(state?.vx ?? 0, state?.vy ?? 0)
+        .setAngvel(state?.angvel ?? 0)
         .setCcdEnabled(true)
         .setCanSleep(false)
         .setLinearDamping(this.settings.controlBallLinearDamping),
@@ -496,61 +1017,117 @@ export class DotpingPhysicsWorld {
     this.colliderRoles.set(contactCollider.handle, 'control');
   }
 
-  private createParticles(preserved?: BodyState[]) {
+  private createParticles(preserved?: BodyState[], entry?: { plain: boolean }) {
     const positions = this.particlePositions(preserved);
-    const particleFilter = this.particleCollisionFilter();
-    const { contactRestitution } = this.material();
+    let active = positions.map((_, id) => id);
 
-    for (const position of positions) {
+    // A packed crowd is spread before Rapier takes over, and the dots
+    // covered by others in it rest under their hosts first (not simulated,
+    // not drawn). A crowd that needs no spread keeps every dot, so presets
+    // keep their fill.
+    let spread = false;
+    if (this.settings.collisionMode === 'collision-physical' && !entry?.plain) {
+      const xs = positions.map((position) => position.x);
+      const ys = positions.map((position) => position.y);
       const radius = this.settings.particleRadius;
-      const body = this.world.createRigidBody(
-        this.rapier.RigidBodyDesc.dynamic()
-          .setTranslation(position.x, position.y)
-          .setLinvel(position.vx, position.vy)
-          .setLinearDamping(this.settings.particleLinearDamping),
-      );
-
-      if (this.settings.colliderLayout === 'single') {
-        const collider = this.world.createCollider(
-          this.rapier.ColliderDesc.ball(radius)
-            .setDensity(this.settings.particleMass / Math.max(Math.PI * radius * radius, 1))
-            .setRestitution(contactRestitution)
-            .setFriction(this.settings.particleFriction)
-            .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
-            .setCollisionGroups(groups(GROUP_PARTICLE, GROUP_WALL | particleFilter)),
-          body,
-        );
-        this.particles.push(body);
-        this.particleWallColliders.push(collider);
-        this.particleContactColliders.push(collider);
-        this.colliderRoles.set(collider.handle, 'particle');
-        continue;
+      spread = needsPhysicalSpread(xs, ys, positions.length, radius);
+      if (spread && this.legacyEntry) {
+        const fit = physicalCapacity(this.widthValue, this.heightValue, radius);
+        this.held = positions.slice(fit).map((state, index) => ({ id: fit + index, state }));
+        active = active.slice(0, fit);
+      } else if (spread) {
+        const host = findCoveredDots(xs, ys, active, positions.length, radius);
+        active = [];
+        host.forEach((over, id) => {
+          if (over < 0) {
+            active.push(id);
+          } else {
+            this.resting.push({
+              id, host: over, dx: xs[id] - xs[over], dy: ys[id] - ys[over], angle: positions[id].angle,
+            });
+          }
+        });
       }
+    }
+    this.ids = active;
 
-      const wallCollider = this.world.createCollider(
-        this.rapier.ColliderDesc.ball(radius)
-          .setDensity(0)
-          .setRestitution(this.settings.wallRestitution)
-          .setFriction(0)
-          .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
-          .setCollisionGroups(groups(GROUP_PARTICLE, GROUP_WALL)),
-        body,
-      );
-      const contactCollider = this.world.createCollider(
+    if (
+      spread ||
+      (this.settings.overlapEngine === 'js' &&
+        this.settings.collisionMode === 'independence-overlapping')
+    ) {
+      const overlap = new OverlapParticles(active.length);
+      active.forEach((id, index) => {
+        const position = positions[id];
+        overlap.set(index, position.x, position.y, position.vx, position.vy);
+        overlap.angle[index] = position.angle;
+        overlap.angvel[index] = position.angvel;
+        this.particles.push(new OverlapParticleBody(overlap, index));
+      });
+      this.overlap = overlap;
+      this.entryFrames = spread ? 0 : -1;
+      return;
+    }
+
+    for (const id of active) {
+      const position = positions[id];
+      this.addRapierParticle(position.x, position.y, position.vx, position.vy, position.angle, position.angvel);
+    }
+  }
+
+  // One Rapier particle with the current settings, appended to `particles`.
+  private addRapierParticle(x: number, y: number, vx: number, vy: number, angle = 0, angvel = 0) {
+    const radius = this.settings.particleRadius;
+    const particleFilter = this.particleCollisionFilter();
+    const body = this.world.createRigidBody(
+      this.rapier.RigidBodyDesc.dynamic()
+        .setTranslation(x, y)
+        .setRotation(angle)
+        .setLinvel(vx, vy)
+        .setAngvel(angvel)
+        .setLinearDamping(this.settings.particleLinearDamping),
+    );
+
+    if (this.settings.colliderLayout === 'single') {
+      const collider = this.world.createCollider(
         this.rapier.ColliderDesc.ball(radius)
           .setDensity(this.settings.particleMass / Math.max(Math.PI * radius * radius, 1))
-          .setRestitution(this.settings.contactRestitution)
+          .setRestitution(this.material().contactRestitution)
           .setFriction(this.settings.particleFriction)
           .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
-          .setCollisionGroups(groups(GROUP_PARTICLE, particleFilter)),
+          .setCollisionGroups(groups(GROUP_PARTICLE, GROUP_WALL | particleFilter)),
         body,
       );
       this.particles.push(body);
-      this.particleWallColliders.push(wallCollider);
-      this.particleContactColliders.push(contactCollider);
-      this.colliderRoles.set(wallCollider.handle, 'particle');
-      this.colliderRoles.set(contactCollider.handle, 'particle');
+      this.particleWallColliders.push(collider);
+      this.particleContactColliders.push(collider);
+      this.colliderRoles.set(collider.handle, 'particle');
+      return;
     }
+
+    const wallCollider = this.world.createCollider(
+      this.rapier.ColliderDesc.ball(radius)
+        .setDensity(0)
+        .setRestitution(this.settings.wallRestitution)
+        .setFriction(0)
+        .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
+        .setCollisionGroups(groups(GROUP_PARTICLE, GROUP_WALL)),
+      body,
+    );
+    const contactCollider = this.world.createCollider(
+      this.rapier.ColliderDesc.ball(radius)
+        .setDensity(this.settings.particleMass / Math.max(Math.PI * radius * radius, 1))
+        .setRestitution(this.settings.contactRestitution)
+        .setFriction(this.settings.particleFriction)
+        .setActiveEvents(this.rapier.ActiveEvents.COLLISION_EVENTS)
+        .setCollisionGroups(groups(GROUP_PARTICLE, particleFilter)),
+      body,
+    );
+    this.particles.push(body);
+    this.particleWallColliders.push(wallCollider);
+    this.particleContactColliders.push(contactCollider);
+    this.colliderRoles.set(wallCollider.handle, 'particle');
+    this.colliderRoles.set(contactCollider.handle, 'particle');
   }
 
   private particlePositions(preserved?: BodyState[]) {
@@ -559,7 +1136,7 @@ export class DotpingPhysicsWorld {
     const rows = Math.ceil(count / cols);
     const xSpacing = this.widthValue / (cols + 1);
     const ySpacing = this.heightValue / (rows + 1);
-    const positions: Array<{ x: number; y: number; vx: number; vy: number }> = [];
+    const positions: Array<{ x: number; y: number; vx: number; vy: number; angle: number; angvel: number }> = [];
 
     for (let i = 0; i < count; i += 1) {
       const existing = preserved?.[i];
@@ -569,6 +1146,8 @@ export class DotpingPhysicsWorld {
           y: clamp(existing.y, this.settings.particleRadius, this.heightValue - this.settings.particleRadius),
           vx: existing.vx,
           vy: existing.vy,
+          angle: existing.angle ?? 0,
+          angvel: existing.angvel ?? 0,
         });
         continue;
       }
@@ -582,6 +1161,8 @@ export class DotpingPhysicsWorld {
         y: (row + 1) * ySpacing + jitterY,
         vx: (Math.random() - 0.5) * 60,
         vy: (Math.random() - 0.5) * 60,
+        angle: 0,
+        angvel: 0,
       });
     }
 
@@ -876,13 +1457,16 @@ export class DotpingPhysicsWorld {
     };
   }
 
-  private applyVelocityCombi(dt: number, previousVelocities: Array<{ x: number; y: number }>) {
+  private applyVelocityCombi(dt: number) {
     if (
       this.settings.dotCombiMode !== 'velocity' ||
       this.settings.collisionMode !== 'independence-overlapping'
     ) {
       return;
     }
+
+    // Read only when linking is on: every other scene skipped the result.
+    const previousVelocities = this.captureParticleVelocities();
 
     for (let index = 0; index < this.particles.length; index += 1) {
       const particle = this.particles[index];
@@ -1086,8 +1670,25 @@ export class DotpingPhysicsWorld {
 
     return {
       control: bodyState(this.controlBall),
-      particles: this.particles.map((particle) => bodyState(particle)),
+      particles: this.particleStatesInOrder(),
     };
+  }
+
+  // Every dot in ID order; a resting dot at its host plus its offset, with
+  // the host's velocity.
+  private particleStatesInOrder(): BodyState[] {
+    const states: BodyState[] = new Array(this.particles.length + this.resting.length + this.held.length);
+    this.particles.forEach((particle, index) => {
+      states[this.ids[index]] = bodyState(particle);
+    });
+    for (const dot of this.resting) {
+      const host = states[dot.host];
+      states[dot.id] = { ...host, x: host.x + dot.dx, y: host.y + dot.dy, angle: dot.angle };
+    }
+    for (const { id, state } of this.held) {
+      states[id] = state;
+    }
+    return states;
   }
 
   private captureParticleVelocities() {
@@ -1190,7 +1791,7 @@ function clampToPlayfield(value: number, radius: number, size: number) {
 function bodyState(body: any): BodyState {
   const pos = body.translation();
   const vel = body.linvel();
-  return { x: pos.x, y: pos.y, vx: vel.x, vy: vel.y };
+  return { x: pos.x, y: pos.y, vx: vel.x, vy: vel.y, angle: body.rotation(), angvel: body.angvel() };
 }
 
 function limitVelocity(velocity: { x: number; y: number }, maxSpeed: number) {
@@ -1213,7 +1814,9 @@ function needsWorldRebuild(previous: DotpingSettings, next: DotpingSettings) {
     previous.controlBallRadius !== next.controlBallRadius ||
     previous.controlBallMass !== next.controlBallMass ||
     previous.rapierLengthUnit !== next.rapierLengthUnit ||
-    previous.colliderLayout !== next.colliderLayout
+    previous.colliderLayout !== next.colliderLayout ||
+    previous.overlapEngine !== next.overlapEngine ||
+    previous.physicalEntryMode !== next.physicalEntryMode
   );
 }
 

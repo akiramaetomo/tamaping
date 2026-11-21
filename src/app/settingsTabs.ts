@@ -1,5 +1,6 @@
 export type SettingsCardId =
   | 'my'
+  | 'snap'
   | 'preset'
   | 'mode'
   | 'ball'
@@ -12,6 +13,7 @@ export type SettingsTabId = SettingsCardId;
 
 export const SETTINGS_TABS: ReadonlyArray<readonly [SettingsTabId, string]> = [
   ['my', 'My'],
+  ['snap', 'Snap'],
   ['preset', 'Preset'],
   ['mode', 'Mode'],
   ['ball', 'Ball'],

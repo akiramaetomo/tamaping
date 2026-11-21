@@ -156,7 +156,8 @@ test('an absent Touch ball takes the start position but does not move', () => {
 });
 
 test('starts travel through exports, imports and the autosave, and old files read as the default', () => {
-  assert.equal(PRESET_EXPORT_SCHEMA_VERSION, 14);
+  // 14 brought starts; 15 added My Panel snapshots.
+  assert.equal(PRESET_EXPORT_SCHEMA_VERSION, 15);
   const settings = FACTORY_PRESETS[0].settings;
 
   const current = createCurrentPresetExport('Work', DEFAULT_SETTINGS, null, null, null, undefined, START);

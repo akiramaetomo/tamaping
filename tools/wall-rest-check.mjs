@@ -4,7 +4,7 @@
 // from the same scene.
 //
 //   npm test                      # builds .test-build
-//   node tools/wall-rest-check.mjs [--layouts split,single] [--seeds 5]
+//   node tools/wall-rest-check.mjs [--layouts split,single,js] [--seeds 5]
 //                                  [--settle 10] [--measure 3]
 //
 // Each seed is a different starting scatter. Per scene and layout it prints
@@ -75,7 +75,11 @@ for (const scene of SCENES) {
 
 function runScene(scene, layout, seed) {
   const restoreRandom = seedRandom(seed);
-  const settings = { ...DEFAULT_SETTINGS, ...scene.settings, colliderLayout: layout };
+  // `js` is the single layout with the TS engine (the default for
+  // `Independent overlap`); the other layouts pin Rapier (`?ov=rapier`).
+  const settings = layout === 'js'
+    ? { ...DEFAULT_SETTINGS, ...scene.settings, colliderLayout: 'single', overlapEngine: 'js' }
+    : { ...DEFAULT_SETTINGS, ...scene.settings, colliderLayout: layout, overlapEngine: 'rapier' };
   const world = new DotpingPhysicsWorld(RAPIER, WIDTH, HEIGHT, settings);
   restoreRandom();
 

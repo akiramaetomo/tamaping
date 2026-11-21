@@ -2,7 +2,7 @@ import type { DotpingSettings } from '../sim/settings';
 import { debugVisibleFromParams } from './debugPanel';
 
 // Hidden diagnostic overrides read from the page URL, such as `?lu=10`,
-// `?cl=split`, `?pr=graphics`, `?fx=trail` and `?debug=1`. Invalid values keep the defaults.
+// `?cl=split`, `?ov=js`, `?entry=held`, `?pr=graphics`, `?fx=trail` and `?debug=1`. Invalid values keep the defaults.
 export function settingsFromUrl(defaults: DotpingSettings, search: string): DotpingSettings {
   const params = new URLSearchParams(search);
   const settings = { ...defaults };
@@ -15,6 +15,21 @@ export function settingsFromUrl(defaults: DotpingSettings, search: string): Dotp
   const colliderLayout = params.get('colliderLayout') ?? params.get('cl');
   if (colliderLayout === 'single' || colliderLayout === 'split') {
     settings.colliderLayout = colliderLayout;
+  }
+
+  const overlapEngine = params.get('overlapEngine') ?? params.get('ov');
+  if (overlapEngine === 'rapier' || overlapEngine === 'js') {
+    settings.overlapEngine = overlapEngine;
+  }
+
+  const physicalEntryMode = params.get('physicalEntryMode') ?? params.get('entry');
+  if (physicalEntryMode === 'rest' || physicalEntryMode === 'held') {
+    settings.physicalEntryMode = physicalEntryMode;
+  }
+
+  const physicalTargetFps = Number(params.get('physicalTargetFps') ?? params.get('physfps'));
+  if (Number.isFinite(physicalTargetFps) && physicalTargetFps >= 1 && physicalTargetFps <= 240) {
+    settings.physicalTargetFps = physicalTargetFps;
   }
 
   const particleRenderer = params.get('particleRenderer') ?? params.get('pr');
@@ -45,8 +60,13 @@ export function settingsFromUrl(defaults: DotpingSettings, search: string): Dotp
     }
   }
   if (fx.includes('shapeturn')) {
-    settings.particleShapeTurn = true;
-    settings.ballShapeTurn = true;
+    settings.particleShapeTurn = 'motion';
+    settings.ballShapeTurn = 'motion';
+  }
+  // `spin`: both cards turn with the body's physical angle.
+  if (fx.includes('spin')) {
+    settings.particleShapeTurn = 'spin';
+    settings.ballShapeTurn = 'spin';
   }
   // `weave` opens the trial scene for judging `Weave` by hand. Particles barely
   // move, and the gaps between them are wider than the ball.
@@ -54,7 +74,7 @@ export function settingsFromUrl(defaults: DotpingSettings, search: string): Dotp
     Object.assign(settings, {
       ballWeave: true,
       ballShape: 'fish',
-      ballShapeTurn: true,
+      ballShapeTurn: 'motion',
       controlBallRadius: 12,
       controlBallMass: 0.1,
       controlBallLinearDamping: 0,

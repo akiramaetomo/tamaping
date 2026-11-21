@@ -2,6 +2,7 @@ import type { AudioDiagnostics } from '../audio/audioEngine';
 import type { ParticleDiagnostics, StepMetrics } from '../sim/physicsWorld';
 import type { CollisionMode, GravityMode } from '../sim/settings';
 import type { ViewScale } from '../sim/viewScale';
+import { physicalTimeLimitMs } from '../sim/physicalEntry';
 import { PERF_PHASES, type PerfPhase, type PerfSummary } from './frameProfiler';
 
 export type DebugProfile = 'physics' | 'audio' | 'perf';
@@ -23,6 +24,24 @@ export type PerfDebugSnapshot = {
   particleBrightnessResponse: number;
   colliderLayout: string;
   colliderCount: number;
+  // Engine for `Independent overlap` particles (`?ov=`).
+  overlapEngine?: string;
+  // `Physical collision` entry: spreading a packed crowd, or dots resting
+  // under others (`flow-out` while they are released, `at-limit` while the
+  // step has no room under the physics time limit, `field-full` while no
+  // free spot is left), and how many rest.
+  physicalEntry?: string | null;
+  restingDots?: number;
+  // `held` with `?entry=held` (the first version of the entry); the
+  // default `rest` is not shown.
+  physicalEntryMode?: string;
+  // Target frame rate behind the physics time limit (`?physfps=`).
+  physicalTargetFps?: number;
+  // Fixed-step policy (`?step=`), the smoothed simulated/real time ratio, and
+  // the smoothed cost of one physics step.
+  stepPolicy?: string;
+  simSpeed?: number;
+  stepCostMs?: number;
   rendererName: string;
   particleRenderer: string;
   // PoC afterglow buffer: `off`, or its texture format while on.
@@ -101,9 +120,36 @@ export function createPhysicsDebugLines(snapshot: PhysicsDebugSnapshot) {
     `rapier_length_unit=${snapshot.lastStepMetrics.lengthUnit}`,
     `collider_layout=${snapshot.lastStepMetrics.colliderLayout}`,
     `colliders=${snapshot.lastStepMetrics.colliderCount}`,
+    ...(snapshot.lastStepMetrics.overlapEngine
+      ? [`overlap_engine=${snapshot.lastStepMetrics.overlapEngine}`]
+      : []),
+    ...physicalEntryLines(
+      snapshot.lastStepMetrics.physicalEntry,
+      snapshot.lastStepMetrics.restingDots,
+      snapshot.lastStepMetrics.physicalEntryMode,
+      snapshot.lastStepMetrics.physicalTargetFps,
+    ),
     `hits=${snapshot.impactCount}`,
     `voices=${snapshot.activeVoiceCount}`,
     ...(snapshot.view ? viewScaleDebugLines(snapshot.view) : []),
+  ];
+}
+
+// Shown only while they apply, so the usual overlay stays short.
+function physicalEntryLines(
+  entry: string | null | undefined,
+  restingDots: number | undefined,
+  mode: string | undefined,
+  targetFps?: number,
+) {
+  const limit = entry && (!mode || mode === 'rest') && targetFps
+    ? [`physical_time_limit_ms=${physicalTimeLimitMs(targetFps).toFixed(1)} target_fps=${targetFps}`]
+    : [];
+  return [
+    ...(mode && mode !== 'rest' ? [`physical_entry_mode=${mode}`] : []),
+    ...(entry ? [`physical_entry=${entry}`] : []),
+    ...limit,
+    ...(restingDots ? [`resting_dots=${restingDots}`] : []),
   ];
 }
 
@@ -135,6 +181,9 @@ export function createPerfDebugLines(snapshot: PerfDebugSnapshot) {
           `frames_over_20ms=${summary.framesOver20Ms}`,
           `frames_over_33ms=${summary.framesOver33Ms}`,
           `steps_per_frame=avg ${summary.stepsAvg.toFixed(2)} max ${summary.stepsMax}`,
+          ...(snapshot.stepPolicy
+            ? [`step_policy=${snapshot.stepPolicy} sim_speed=${(snapshot.simSpeed ?? 1).toFixed(2)} step_cost_ms=${(snapshot.stepCostMs ?? 0).toFixed(2)}`]
+            : []),
           ...PERF_PHASES.map((phase) => {
             const stats = summary.phases[phase];
             return `${PERF_PHASE_KEYS[phase]}=avg ${stats.avg.toFixed(2)} p95 ${stats.p95.toFixed(2)} max ${stats.max.toFixed(2)}`;
@@ -149,6 +198,13 @@ export function createPerfDebugLines(snapshot: PerfDebugSnapshot) {
     `bright=${snapshot.particleBrightnessResponse}`,
     `collider_layout=${snapshot.colliderLayout}`,
     `colliders=${snapshot.colliderCount}`,
+    ...(snapshot.overlapEngine ? [`overlap_engine=${snapshot.overlapEngine}`] : []),
+    ...physicalEntryLines(
+      snapshot.physicalEntry,
+      snapshot.restingDots,
+      snapshot.physicalEntryMode,
+      snapshot.physicalTargetFps,
+    ),
     `renderer=${snapshot.rendererName}`,
     `particle_renderer=${snapshot.particleRenderer}`,
     ...(snapshot.afterglow ? [`afterglow=${snapshot.afterglow}`] : []),
@@ -169,6 +225,7 @@ export function createAudioDebugLines(
   audio: AudioDiagnostics,
   profile: DebugProfile,
   deltaSeconds?: number,
+  overlapEngine?: string,
 ) {
   return [
     'dotping_debug',
@@ -176,6 +233,8 @@ export function createAudioDebugLines(
     ...(deltaSeconds === undefined
       ? []
       : [`fps=${Math.round(1 / Math.max(deltaSeconds, 0.001))}`]),
+    // The engine changes Ball-particle sounds of a resting crowd.
+    ...(overlapEngine ? [`overlap_engine=${overlapEngine}`] : []),
     `audio_enabled=${audio.enabled}`,
     `audio_context=${audio.contextState}`,
     `audio_resume=${audio.lastResumeStatus}`,

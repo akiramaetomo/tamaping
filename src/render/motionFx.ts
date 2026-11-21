@@ -8,12 +8,13 @@
 // which spends most of its range on speeds a player can barely see, and
 // nothing switches off at a threshold.
 
-import type { BodyShape } from '../sim/settings';
+import type { BodyShape, ShapeTurn } from '../sim/settings';
 
 export type MotionFx = {
   shape: BodyShape;
-  // The shape turns to the direction of motion (Star, Fish and Sparkle).
-  shapeTurn: boolean;
+  // Shape `Turn`: off, face the direction of motion (Star, Fish, Sparkle),
+  // or turn with the body's physical angle (every shape).
+  shapeTurn: ShapeTurn;
   // Sparkle spike curvature, -1 to 1; see rayShapeExponent.
   shapeCurve: number;
   // Multiplier on the body's own alphas (1 = the original look).
@@ -37,7 +38,7 @@ export type MotionFx = {
 
 export const NO_MOTION_FX: MotionFx = {
   shape: 'circle',
-  shapeTurn: false,
+  shapeTurn: 'off',
   shapeCurve: -0.75,
   opacity: 1,
   rays: false,
@@ -75,11 +76,36 @@ export function hasSolidBody(shape: BodyShape) {
   return shape !== 'sparkle';
 }
 
-// Body rotation for a heading (0 = +x). The fish's head faces +x; the star
-// points up, so a quarter turn puts one point in front. A turning sparkle
-// follows the heading like Rays `Turn`.
-export function shapeRotation(shape: BodyShape, turn: boolean, heading: number) {
-  if (!turn || !shapeTurns(shape)) {
+// Whether the drawn body rotates at all: `motion` only for shapes with a
+// front, `spin` for every shape.
+export function bodyRotates(shape: BodyShape, turn: ShapeTurn) {
+  return turn === 'spin' || (turn === 'motion' && shapeTurns(shape));
+}
+
+// The circle shows its spin by a spoke; without `Spin` it stays plain, so a
+// circle with `Motion` looks as it always did.
+export function showsSpinMark(shape: BodyShape, turn: ShapeTurn) {
+  return shape === 'circle' && turn === 'spin';
+}
+
+// Spin mark (the circle's spoke), design knobs:
+// - SPIN_MARK_WIDTH: spoke width, in body radii.
+// - SPIN_MARK_ALPHA: the spoke's opacity against the filled body's (a dimmer
+//   slot on a filled disc; on a ring the spoke is filled at the rim's opacity).
+// - SPIN_MARK_LENGTH: spoke length from the centre, in body radii.
+export const SPIN_MARK_WIDTH = 0.22;
+export const SPIN_MARK_ALPHA = 0.3;
+export const SPIN_MARK_LENGTH = 1;
+
+// Body rotation (0 = +x). Under `motion`, `heading` is the smoothed travel
+// direction: the fish's head faces +x; the star points up, so a quarter turn
+// puts one point in front; a sparkle follows the heading like Rays `Turn`.
+// Under `spin`, the body's physical angle is used as it is.
+export function shapeRotation(shape: BodyShape, turn: ShapeTurn, heading: number, angle = 0) {
+  if (turn === 'spin') {
+    return Number.isFinite(angle) ? angle : 0;
+  }
+  if (turn !== 'motion' || !shapeTurns(shape)) {
     return 0;
   }
   return shape === 'star' ? heading + Math.PI / 2 : heading;

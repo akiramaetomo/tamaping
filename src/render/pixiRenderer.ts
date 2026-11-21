@@ -21,8 +21,11 @@ import {
   rayScale,
   rayShapeExponent,
   scaledAlpha,
+  SPIN_MARK_LENGTH,
+  SPIN_MARK_WIDTH,
+  bodyRotates,
   shapeRotation,
-  shapeTurns,
+  showsSpinMark,
   sparkleScale,
   speedFactor,
   type MotionFx,
@@ -388,7 +391,7 @@ export class PixiRenderer {
     }
     // The held heading and speed also turn the shape, set the fish beat and
     // the afterglow's life, so the hold runs while any of them needs it.
-    if (!fx.rays && fx.shape !== 'fish' && !(fx.shapeTurn && shapeTurns(fx.shape)) && !fx.afterglow) {
+    if (!fx.rays && fx.shape !== 'fish' && !(fx.shapeTurn === 'motion' && bodyRotates(fx.shape, fx.shapeTurn)) && !fx.afterglow) {
       this.ballSpeedHold.reset();
     }
     if (!fx.trail) {
@@ -420,6 +423,10 @@ export class PixiRenderer {
 
     for (let index = 0; index < snapshot.particles.length; index += 1) {
       const dot = snapshot.particles[index];
+      // A resting dot (`Physical collision` entry) is not drawn.
+      if (!dot.visible) {
+        continue;
+      }
       const baseColor = this.particleBaseColors[index];
       let color = baseColor;
 
@@ -484,6 +491,11 @@ export class PixiRenderer {
 
     for (let index = 0; index < count; index += 1) {
       const dot = particles[index];
+      // A resting dot (`Physical collision` entry) is not drawn.
+      if (!dot.visible) {
+        layer.hideParticle(index);
+        continue;
+      }
       const baseColor = this.particleBaseColors[index];
       let color = glowTargets
         ? speedColorToward(dot.speed, baseColor, brightness, glowTargets[index])
@@ -493,11 +505,11 @@ export class PixiRenderer {
         color = LEADER_COLOR;
         alpha = LEADER_RIM_ALPHA;
       }
-      layer.setParticle(index, dot.x, dot.y, dot.radius, color, alpha, dot.vx, dot.vy, dot.speed);
+      layer.setParticle(index, dot.x, dot.y, dot.radius, color, alpha, dot.vx, dot.vy, dot.speed, dot.angle);
     }
     layer.finishFrame();
 
-    if (leaderVisible) {
+    if (leaderVisible && particles[0].visible) {
       const leader = particles[0];
       layer.setHalo(
         true,
@@ -535,16 +547,18 @@ export class PixiRenderer {
 
     const shape = this.ballFx.shape;
     const solid = hasSolidBody(shape);
-    const turning = this.ballFx.shapeTurn && shapeTurns(shape);
+    const turn = this.ballFx.shapeTurn;
+    const turning = bodyRotates(shape, turn);
+    const spin = turn === 'spin';
     // One held heading per frame, shared by the shape and the rays.
     const now = performance.now();
     // The afterglow uses the held speed: a frame without a pointer event
     // would otherwise stamp the long life of a still ball.
     const strokes = this.ballFx.afterglow && !solid;
-    const motion = this.ballFx.rays || turning || shape === 'fish' || this.ballFx.afterglow
+    const motion = this.ballFx.rays || (turning && !spin) || shape === 'fish' || this.ballFx.afterglow
       ? this.ballSpeedHold.update(ball.speed, ball.vx, ball.vy, now)
       : null;
-    const rotation = shapeRotation(shape, turning, motion?.heading ?? 0);
+    const rotation = shapeRotation(shape, turn, motion?.heading ?? 0, ball.angle);
     // The afterglow follows the body outline, not the darker glow around it.
     // Without a solid body (Sparkle), it is a stroke whose width follows
     // speed.
@@ -583,7 +597,7 @@ export class PixiRenderer {
       this.ballFishAt = now;
       const pose = this.ballFish.update(
         speedFactor(motion?.speed ?? 0, BALL_CURVE),
-        turning ? (motion?.heading ?? 0) : null,
+        turning ? (spin ? rotation : (motion?.heading ?? 0)) : null,
         seconds,
       );
       const parts = fishParts(pose);
@@ -619,6 +633,16 @@ export class PixiRenderer {
         color: style.shade,
         alpha: style.shadeAlpha,
       });
+      if (showsSpinMark(shape, turn)) {
+        // The spoke turns with the Ball; the highlight and shade are
+        // lighting and stay put.
+        const width = ball.radius * SPIN_MARK_WIDTH;
+        const reach = ball.radius * SPIN_MARK_LENGTH - width / 2;
+        this.control
+          .moveTo(ball.x, ball.y)
+          .lineTo(ball.x + Math.cos(rotation) * reach, ball.y + Math.sin(rotation) * reach)
+          .stroke({ color: style.center, width, alpha: style.centerAlpha, cap: 'round' });
+      }
       if (this.ballRimEnabled) {
         this.control.circle(ball.x, ball.y, ball.radius).stroke({
           color: style.stroke,

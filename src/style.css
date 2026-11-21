@@ -11,6 +11,7 @@
   --accent-interaction: #ffb4c0;
   --accent-audio: #ffd689;
   --accent-utility: #cdd9e8;
+  --accent-snap: #ffae7a;
 }
 
 html,
@@ -287,18 +288,19 @@ button:disabled {
 .hud__tab[data-tab="interaction"] { --tab-accent: var(--accent-interaction); }
 .hud__tab[data-tab="audio"] { --tab-accent: var(--accent-audio); }
 .hud__tab[data-tab="utility"] { --tab-accent: var(--accent-utility); }
+.hud__tab[data-tab="snap"] { --tab-accent: var(--accent-snap); }
 
 /* Card tabs use the same accent as their card, like the My tab. */
 .hud__tab[data-tab]:is(
   [data-tab="preset"], [data-tab="mode"], [data-tab="ball"], [data-tab="particles"],
-  [data-tab="interaction"], [data-tab="audio"], [data-tab="utility"]
+  [data-tab="interaction"], [data-tab="audio"], [data-tab="utility"], [data-tab="snap"]
 ) {
   color: var(--tab-accent);
 }
 
 .hud__tab[data-tab]:is(
   [data-tab="preset"], [data-tab="mode"], [data-tab="ball"], [data-tab="particles"],
-  [data-tab="interaction"], [data-tab="audio"], [data-tab="utility"]
+  [data-tab="interaction"], [data-tab="audio"], [data-tab="utility"], [data-tab="snap"]
 )[aria-selected="true"] {
   border-color: color-mix(in srgb, var(--tab-accent) 66%, transparent);
   background: color-mix(in srgb, var(--tab-accent) 24%, rgb(10 15 24 / 90%));
@@ -892,6 +894,117 @@ button:disabled {
   font-size: 13px;
 }
 
+/* Snap panel: slots 1-4, Rec and Del (spec: Snap Panel). */
+.hud__group--snap {
+  --group-border: color-mix(in srgb, var(--accent-snap) 34%, transparent);
+  --group-bg: rgb(34 20 10 / 66%);
+  --group-accent: var(--accent-snap);
+}
+
+.pinned-settings .hud__group--snap {
+  --group-bg: rgb(34 20 10 / 24%);
+}
+
+.hud__snap-hint {
+  margin: 0;
+  color: rgb(220 234 255 / 64%);
+  font-size: 13px;
+}
+
+.hud__snap-hint[hidden] {
+  display: none;
+}
+
+.hud__snapshots {
+  display: flex;
+  gap: 6px;
+}
+
+.hud__snapshots[hidden],
+.hud__snapshot-mode[hidden] {
+  display: none;
+}
+
+.hud__snapshot {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud__snapshot.is-empty {
+  border-style: dashed;
+}
+
+.hud__snapshot[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent-snap) 75%, transparent);
+  background: color-mix(in srgb, var(--accent-snap) 30%, rgb(10 15 24 / 90%));
+  color: #fff3ea;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-snap) 16%, transparent);
+}
+
+/* `width: auto` beats the phone rule that stretches every button. */
+.hud__snapshots .hud__snapshot-mode {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0 10px;
+}
+
+.hud__snapshot-rec[aria-pressed="true"] {
+  border-color: rgb(255 120 120 / 70%);
+  background: rgb(80 18 22 / 90%);
+  color: #ffe4e4;
+}
+
+.hud__snapshots.is-recording .hud__snapshot {
+  border-color: rgb(255 120 120 / 55%);
+}
+
+.hud__snapshot-del[aria-pressed="true"] {
+  border-color: rgb(255 190 110 / 70%);
+  background: rgb(76 44 10 / 90%);
+  color: #fff0dc;
+}
+
+.hud__snapshots.is-deleting .hud__snapshot:not(.is-empty) {
+  border-color: rgb(255 190 110 / 60%);
+  text-decoration: line-through;
+}
+
+/* Pinned slots (user request 2026-11-22, spec: Snap Panel): three clear
+   states over the play field. Empty almost disappears, filled invites a tap,
+   the lit slot is solid. Fills stay translucent so the dots show through. */
+.pinned-settings .hud__group--snap > * {
+  opacity: 1;
+}
+
+.pinned-settings .hud__snapshot {
+  font-weight: 600;
+}
+
+.pinned-settings .hud__snapshot:not(.is-empty) {
+  border-color: color-mix(in srgb, var(--accent-snap) 62%, transparent);
+  background: color-mix(in srgb, var(--accent-snap) 18%, rgb(14 20 32 / 42%));
+  color: #ffe8d8;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 30%), inset 0 1px 0 rgb(255 255 255 / 10%);
+}
+
+.pinned-settings .hud__snapshot.is-empty,
+.pinned-settings .hud__snapshot.is-empty:disabled {
+  border-color: rgb(206 229 255 / 12%);
+  background: transparent;
+  color: rgb(237 244 255 / 18%);
+  box-shadow: none;
+  opacity: 1;
+}
+
+.pinned-settings .hud__snapshot[aria-pressed="true"] {
+  border-color: var(--accent-snap);
+  background: color-mix(in srgb, var(--accent-snap) 80%, transparent);
+  color: #2a1406;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-snap) 38%, transparent);
+}
+
 .hud__action {
   display: grid;
   min-width: 0;
@@ -1218,7 +1331,11 @@ button:disabled {
 .debug {
   position: fixed;
   left: max(10px, env(safe-area-inset-left));
-  top: max(10px, env(safe-area-inset-top));
+  /* Below the front preset bar, level with the Copy Debug button, so the bar
+     does not cover the first lines. */
+  top: calc(max(12px, env(safe-area-inset-top)) + 52px);
+  /* Long lines wrap inside the screen instead of running off its edge. */
+  max-width: calc(100vw - max(10px, env(safe-area-inset-left)) - max(10px, env(safe-area-inset-right)));
   z-index: 2;
   padding: 6px 8px;
   border-radius: 6px;
@@ -1230,7 +1347,16 @@ button:disabled {
   line-height: 1.35;
   pointer-events: none;
   user-select: none;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* On narrow screens the Copy Debug button sits over the overlay's first
+   lines, so the overlay starts below it. */
+@media (max-width: 520px) {
+  .debug {
+    top: calc(max(12px, env(safe-area-inset-top)) + 94px);
+  }
 }
 
 .sound-unlock-button {
@@ -1533,8 +1659,15 @@ button:disabled {
   min-height: 26px;
 }
 
+/* The front is for playing: pins are set and cleared in Settings only, so a
+   tap meant for a control never unpins the panel (user decision 2026-11-21). */
 .pinned-settings .hud__pin-button {
-  min-height: 24px;
+  display: none;
+}
+
+/* Pinned Snap is the slot row alone; its title helps nobody in front. */
+.pinned-settings .hud__group--snap .hud__group-header {
+  display: none;
 }
 
 /* Import review panel (round 16). A modal dialog over the stage. */

@@ -1,7 +1,7 @@
 // Runs the `?dbg=perf` bench scenes in a real browser and records the
 // overlay text (`npm run bench`, see docs/testing-guide.md).
 //
-//   node tools/bench-browser.mjs [--target pc|android] [--benches A,B,C,D]
+//   node tools/bench-browser.mjs [--target pc|android] [--benches A,B,C,D,E]
 //                                [--settle 14] [--query cl=single] [--out file]
 //
 // pc:      opens a headed Edge or Chrome window, so the real GPU and frame
@@ -35,7 +35,7 @@ const PC_WINDOW_ARGS = [
 ];
 
 function parseArgs(argv) {
-  const options = { target: 'pc', benches: ['A', 'B', 'C', 'D'], settle: 14, query: '', out: '' };
+  const options = { target: 'pc', benches: ['A', 'B', 'C', 'D', 'E'], settle: 14, query: '', out: '' };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index + 1];
     switch (argv[index]) {

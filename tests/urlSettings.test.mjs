@@ -34,6 +34,21 @@ test('url settings accept only known collider layouts', () => {
   );
 });
 
+test('url settings accept only known overlap engines', () => {
+  assert.equal(DEFAULT_SETTINGS.overlapEngine, 'js');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?ov=rapier').overlapEngine, 'rapier');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?ov=js').overlapEngine, 'js');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?overlapEngine=rapier&ov=js').overlapEngine, 'rapier');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?ov=wasm').overlapEngine, 'js');
+  assert.equal(DEFAULT_SETTINGS.physicalEntryMode, 'rest');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?entry=held').physicalEntryMode, 'held');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?entry=spill').physicalEntryMode, 'rest');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?physfps=60').physicalTargetFps, 60);
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?physicalTargetFps=15').physicalTargetFps, 15);
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?physfps=0').physicalTargetFps, 60);
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?physfps=fast').physicalTargetFps, 60);
+});
+
 test('url settings accept only known particle renderers', () => {
   assert.equal(DEFAULT_SETTINGS.particleRenderer, 'sprite');
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?pr=graphics').particleRenderer, 'graphics');
@@ -84,14 +99,20 @@ test('url fx parameter turns the PoC motion effects on for dots and ball', () =>
   assert.equal(sparkle.particleShape, 'sparkle');
   assert.equal(sparkle.ballShape, 'sparkle');
   assert.equal(sparkle.particleFxRays, true);
-  // Shape `Turn` is on by default.
-  assert.equal(sparkle.particleShapeTurn && sparkle.ballShapeTurn, true);
+  // Shape `Turn` is `Motion` by default.
+  assert.equal(sparkle.particleShapeTurn, 'motion');
+  assert.equal(sparkle.ballShapeTurn, 'motion');
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?fx=none').particleShape, 'circle');
 
   const fish = settingsFromUrl(DEFAULT_SETTINGS, '?fx=fish,shapeturn');
   assert.equal(fish.particleShape, 'fish');
   assert.equal(fish.ballShape, 'fish');
-  assert.equal(fish.particleShapeTurn && fish.ballShapeTurn, true);
+  assert.equal(fish.particleShapeTurn, 'motion');
+  assert.equal(fish.ballShapeTurn, 'motion');
+  const spin = settingsFromUrl(DEFAULT_SETTINGS, '?fx=spin');
+  assert.equal(spin.particleShapeTurn, 'spin');
+  assert.equal(spin.ballShapeTurn, 'spin');
+  assert.equal(spin.particleShape, 'circle');
   assert.equal(fish.particleFxRaysTurn || fish.ballFxRaysTurn, false);
   assert.equal(off.particleFxAfterglow || off.ballFxAfterglow, false);
   const glow = settingsFromUrl(DEFAULT_SETTINGS, '?fx=afterglow');

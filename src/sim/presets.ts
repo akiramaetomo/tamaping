@@ -7,8 +7,11 @@ import {
   type BodyShape,
   type DotpingSettings,
   type ParticlePalette,
+  SHAPE_TURNS,
+  type ShapeTurn,
 } from './settings';
 import { FACTORY_PRESET_DEFINITION_DATA } from './factoryPresetData';
+import { factoryPresetGenreLabel } from './factoryPresetGenres';
 import { STARTER_USER_PRESET_DATA } from './starterPresetData';
 import type { PresetDataEntry } from './presetData';
 import {
@@ -19,10 +22,12 @@ import {
 import { normalizeDesignViewport, type Viewport } from './viewScale';
 
 export const USER_PRESET_COUNT = 60;
-export const PRESET_EXPORT_SCHEMA_VERSION = 14;
+export const PRESET_EXPORT_SCHEMA_VERSION = 15;
 export const PRESET_NAME_MAX_LENGTH = 40;
 export const AUTOSAVE_WORKING_PRESET_NAME = 'Autosave working';
 export const PRESET_MY_PANEL_MAX_ITEMS = 10;
+// My Panel snapshot slots per preset. Spec: `Proposed My Panel Snapshots`.
+export const PRESET_SNAPSHOT_COUNT = 4;
 
 // v2 holds 60 slots. v1 is the 30-slot key of 0.2.7 and earlier: it is read
 // once to fill v2 and never written again, so an old tab left open after an
@@ -149,16 +154,28 @@ type LegacySharedAudioPresetSettings = {
   audioDurationMs?: unknown;
 };
 
+// The values one My Panel snapshot slot holds: everything a preset stores
+// except its pin, its My Panel rows and its snapshots.
+export type PresetSnapshot = PresetTuningSettings;
+export type PresetSnapshotSlots = Array<PresetSnapshot | null>;
+
 export type PresetSettings = PresetTuningSettings & {
   pinnedGroup?: PresetPinnedGroup;
   // The preset's own My Panel rows, in order. Missing means the preset has no
   // rows and shows the browser's own My Panel; empty means an empty panel.
   myPanelItems?: string[];
+  // Snap panel slots, always `PRESET_SNAPSHOT_COUNT` long. Missing means
+  // every slot is empty.
+  snapshots?: PresetSnapshotSlots;
+  // The Snap panel's own pin, apart from `pinnedGroup`. Missing means unpinned.
+  snapPinned?: boolean;
 };
 
 export type FactoryPreset = {
   id: string;
   name: string;
+  // The drop-down group (`factoryPresetGenres.ts`); not stored in files.
+  genre: string;
   formationLabel?: string;
   // Screen the preset was tuned on, as for user presets. Missing means the
   // default phone design screen.
@@ -200,6 +217,7 @@ function factoryPreset(entry: PresetDataEntry, index: number): FactoryPreset {
   return {
     id: `factory-${index + 1}`,
     name: `${index + 1}. ${entry.name}`,
+    genre: factoryPresetGenreLabel(entry.name),
     ...(formationLabel ? { formationLabel } : {}),
     ...(design ? { designViewport: design } : {}),
     start: entry.start ? normalizePresetStart(entry.start) : { ...DEFAULT_PRESET_START },
@@ -222,10 +240,15 @@ export function presetFromSettings(
   settings: DotpingSettings,
   pinnedGroup: PresetPinnedGroup = null,
   myPanelItems?: readonly string[],
+  snapshots?: readonly (PresetSnapshot | null)[],
+  snapPinned = false,
 ): PresetSettings {
+  const slots = snapshotSlotsField(snapshots);
   return {
     pinnedGroup,
     ...(myPanelItems ? { myPanelItems: [...myPanelItems] } : {}),
+    ...(slots ? { snapshots: slots } : {}),
+    ...(snapPinned ? { snapPinned: true } : {}),
     collisionMode: settings.collisionMode,
     particlePalette: settings.particlePalette,
     dotCombiMode: settings.dotCombiMode,
@@ -289,6 +312,37 @@ export function presetFromSettings(
     ballFxAfterglowStrength: settings.ballFxAfterglowStrength,
     ballFxAfterglowLength: settings.ballFxAfterglowLength,
   };
+}
+
+// One snapshot of the current values, in the fixed key order of
+// `presetFromSettings`, so two snapshots compare equal as JSON.
+export function presetSnapshotFromSettings(settings: DotpingSettings): PresetSnapshot {
+  const { pinnedGroup: _pinnedGroup, snapPinned: _snapPinned, ...snapshot } = presetFromSettings(settings);
+  return snapshot;
+}
+
+export function emptySnapshotSlots(): PresetSnapshotSlots {
+  return Array.from({ length: PRESET_SNAPSHOT_COUNT }, () => null);
+}
+
+export function presetSnapshotsEqual(a: PresetSnapshot | null, b: PresetSnapshot | null) {
+  return a !== null && b !== null && JSON.stringify(a) === JSON.stringify(b);
+}
+
+// The slot list a preset stores: a fixed length, each slot rebuilt in the
+// canonical key order. A list with no filled slot is not stored at all, so a
+// preset without snapshots and one with only empty slots compare equal.
+function snapshotSlotsField(
+  snapshots: readonly (PresetSnapshot | null)[] | undefined,
+): PresetSnapshotSlots | null {
+  if (!snapshots) {
+    return null;
+  }
+  const slots = emptySnapshotSlots().map((_, index) => {
+    const snapshot = snapshots[index];
+    return snapshot ? presetSnapshotFromSettings({ ...DEFAULT_SETTINGS, ...snapshot }) : null;
+  });
+  return slots.some(Boolean) ? slots : null;
 }
 
 export type PresetStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -423,6 +477,8 @@ export function createCurrentPresetExport(
   designViewport?: Viewport | null,
   myPanelItems?: readonly string[],
   start?: PresetStart | null,
+  snapshots?: readonly (PresetSnapshot | null)[],
+  snapPinned = false,
 ): PresetExportFile {
   const label = sanitizeFormationLabel(formationLabel);
   const design = normalizeDesignViewport(designViewport);
@@ -432,7 +488,7 @@ export function createCurrentPresetExport(
       ...(label ? { formationLabel: label } : {}),
       ...(design ? { designViewport: design } : {}),
       ...startField(start),
-      settings: presetFromSettings(settings, pinnedGroup, myPanelItems),
+      settings: presetFromSettings(settings, pinnedGroup, myPanelItems, snapshots, snapPinned),
     },
   ]);
 }
@@ -740,7 +796,7 @@ export function normalizePresetSettings(value: unknown): PresetSettings {
     // Shapes and effects (round 10). Missing keys take the defaults, so a
     // preset saved before them always looks the same.
     particleShape: normalizeShape(source.particleShape) ?? base.particleShape,
-    particleShapeTurn: booleanValue(source.particleShapeTurn, base.particleShapeTurn),
+    particleShapeTurn: shapeTurnValue(source.particleShapeTurn, base.particleShapeTurn),
     particleShapeCurve: rangeValue(source.particleShapeCurve, base.particleShapeCurve, FX_RANGES.curve),
     particleShapeOpacity: rangeValue(source.particleShapeOpacity, base.particleShapeOpacity, FX_RANGES.particleShapeOpacity),
     particleFxRays: booleanValue(source.particleFxRays, base.particleFxRays),
@@ -769,7 +825,7 @@ export function normalizePresetSettings(value: unknown): PresetSettings {
       FX_RANGES.afterglowLength,
     ),
     ballShape: normalizeShape(source.ballShape) ?? base.ballShape,
-    ballShapeTurn: booleanValue(source.ballShapeTurn, base.ballShapeTurn),
+    ballShapeTurn: shapeTurnValue(source.ballShapeTurn, base.ballShapeTurn),
     ballShapeCurve: rangeValue(source.ballShapeCurve, base.ballShapeCurve, FX_RANGES.curve),
     ballShapeOpacity: rangeValue(source.ballShapeOpacity, base.ballShapeOpacity, FX_RANGES.ballShapeOpacity),
     ballFxRays: booleanValue(source.ballFxRays, base.ballFxRays),
@@ -807,7 +863,37 @@ export function normalizePresetSettings(value: unknown): PresetSettings {
     normalized.myPanelItems = myPanelItemsValue(source.myPanelItems);
   }
 
+  if (Array.isArray(source.snapshots)) {
+    const slots = snapshotSlotsField(snapshotSlotsValue(source.snapshots));
+    if (slots) {
+      normalized.snapshots = slots;
+    }
+  }
+
+  if (source.snapPinned === true) {
+    normalized.snapPinned = true;
+  }
+
   return normalized;
+}
+
+// Each slot is read like a preset's own settings, so a bad value falls back to
+// the default. A slot never carries a pin, rows or snapshots of its own.
+function snapshotSlotsValue(values: readonly unknown[]): PresetSnapshotSlots {
+  return emptySnapshotSlots().map((_, index) => {
+    const value = values[index];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    const {
+      pinnedGroup: _pinnedGroup,
+      myPanelItems: _myPanelItems,
+      snapshots: _snapshots,
+      snapPinned: _snapPinned,
+      ...snapshot
+    } = normalizePresetSettings({ ...(value as object), snapshots: undefined });
+    return snapshot;
+  });
 }
 
 // Only the list's shape is checked here. Which ids exist is known to the app,
@@ -879,6 +965,14 @@ function normalizeShape(value: unknown): BodyShape | null {
 
 function rangeValue(value: unknown, fallback: number, range: readonly [number, number]) {
   return finiteNumberInRange(value, fallback, range[0], range[1]);
+}
+
+// Shape `Turn` was a boolean before `Spin` existed: true meant `motion`.
+export function shapeTurnValue(value: unknown, fallback: ShapeTurn): ShapeTurn {
+  if (typeof value === 'boolean') {
+    return value ? 'motion' : 'off';
+  }
+  return SHAPE_TURNS.includes(value as ShapeTurn) ? (value as ShapeTurn) : fallback;
 }
 
 function booleanValue(value: unknown, fallback: boolean) {

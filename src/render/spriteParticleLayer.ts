@@ -15,21 +15,25 @@ import {
   AFTERGLOW_MAX_SECONDS,
   afterglowLife,
   afterglowTint,
+  bodyRotates,
   followDirection,
   hasSolidBody,
   rayAlpha,
   rayScale,
   rayShapeExponent,
   scaledAlpha,
+  SPIN_MARK_ALPHA,
+  SPIN_MARK_LENGTH,
+  SPIN_MARK_WIDTH,
   shapeRotation,
-  shapeTurns,
+  showsSpinMark,
   sparkleScale,
   speedFactor,
   trailAlpha,
   trailLength,
 } from './motionFx';
 import { particleColor } from './particleColors';
-import type { BodyShape } from '../sim/settings';
+import type { BodyShape, ShapeTurn } from '../sim/settings';
 
 // `sparkle` hides the body batch and draws an additive X per dot instead.
 export type ParticleShape = BodyShape;
@@ -114,7 +118,7 @@ export class SpriteParticleLayer {
   private fishMesh: FishMesh | null = null;
   private rimWidthPercent: number;
   private shape: ParticleShape = 'circle';
-  private shapeTurn = false;
+  private shapeTurn: ShapeTurn = 'off';
   private raysTurn = false;
   private raysCurve = -0.75;
 
@@ -216,9 +220,13 @@ export class SpriteParticleLayer {
     }
   }
 
-  setShape(shape: ParticleShape, turn: boolean) {
+  setShape(shape: ParticleShape, turn: ShapeTurn) {
     const wasTurning = this.bodyTurns;
+    const hadMark = this.spinMark;
     this.shapeTurn = turn;
+    if (this.shape === shape && hadMark !== this.spinMark) {
+      this.redrawBody();
+    }
     if (this.shape !== shape) {
       this.shape = shape;
       this.body.visible = shape === 'circle' || shape === 'star';
@@ -246,7 +254,11 @@ export class SpriteParticleLayer {
   }
 
   private get bodyTurns() {
-    return this.shapeTurn && shapeTurns(this.shape);
+    return bodyRotates(this.shape, this.shapeTurn);
+  }
+
+  private get spinMark() {
+    return showsSpinMark(this.shape, this.shapeTurn);
   }
 
   // The rim width is global, not per particle, so one body texture serves all
@@ -269,7 +281,7 @@ export class SpriteParticleLayer {
       this.fishMesh?.draw(this.rimWidthPercent);
       return;
     }
-    drawShape(this.bodyTexture.source.resource as HTMLCanvasElement, this.rimWidthPercent, this.shape);
+    drawShape(this.bodyTexture.source.resource as HTMLCanvasElement, this.rimWidthPercent, this.shape, this.spinMark);
     this.bodyTexture.source.update();
   }
 
@@ -321,8 +333,10 @@ export class SpriteParticleLayer {
     vx = 0,
     vy = 0,
     speed = 0,
+    angle = 0,
   ) {
     const turning = this.bodyTurns;
+    const spin = this.shapeTurn === 'spin';
     const fish = this.shape === 'fish' ? this.fishMesh : null;
     if (!this.trails.visible && !this.rays.visible && !turning && !fish) {
       this.setBody(index, x, y, radius, color, alpha, 0, speed);
@@ -330,7 +344,9 @@ export class SpriteParticleLayer {
     }
 
     const factor = speedFactor(speed);
-    const heading = this.trails.visible || this.rays.visible || turning
+    // Spin turns the body by its own angle; the smoothed heading is still
+    // needed for the trail and the rays.
+    const heading = this.trails.visible || this.rays.visible || (turning && !spin)
       ? this.smoothedHeading(index, vx, vy, speed, factor)
       : 0;
     if (fish) {
@@ -342,11 +358,11 @@ export class SpriteParticleLayer {
         radius,
         particleColor(color, scaledAlpha(alpha, this.opacity)),
         factor,
-        turning ? heading : null,
+        turning ? (spin ? angle : heading) : null,
         life,
       );
     } else {
-      this.setBody(index, x, y, radius, color, alpha, shapeRotation(this.shape, turning, heading), speed);
+      this.setBody(index, x, y, radius, color, alpha, shapeRotation(this.shape, this.shapeTurn, heading, angle), speed);
     }
     if (this.trails.visible) {
       const trail = effectParticle(
@@ -372,6 +388,35 @@ export class SpriteParticleLayer {
       ray.scaleX = scale;
       ray.scaleY = scale;
       ray.color = particleColor(color, rayAlpha(factor));
+    }
+  }
+
+  // Draws nothing for this dot this frame (a resting dot). Its afterglow
+  // starts fresh where it shows again, so no band crosses the gap.
+  hideParticle(index: number) {
+    for (const container of [this.body, this.trails, this.rays, this.sparkles]) {
+      const sprite = container.particleChildren[index];
+      if (sprite) {
+        sprite.scaleX = 0;
+        sprite.scaleY = 0;
+      }
+    }
+    const layers = this.afterglowLayers;
+    if (layers) {
+      for (const container of [layers.heads, layers.bands, layers.discFootprints, layers.starFootprints]) {
+        const sprite = container.particleChildren[index];
+        if (sprite) {
+          sprite.scaleX = 0;
+          sprite.scaleY = 0;
+        }
+      }
+    }
+    if (index < this.lastX.length) {
+      this.lastX[index] = Number.NaN;
+      this.lastY[index] = Number.NaN;
+    }
+    if (this.shape === 'fish') {
+      this.fishMesh?.setFish(index, 0, 0, 0, 0, 0, null, 0);
     }
   }
 
@@ -431,7 +476,7 @@ export class SpriteParticleLayer {
     const star = this.shape === 'star';
     const footprints = star ? layers.starFootprints : layers.discFootprints;
     const texels = star ? bodyRadiusTexels('star') : TEXTURE_RADIUS;
-    const fresh = index >= this.lastX.length;
+    const fresh = index >= this.lastX.length || Number.isNaN(this.lastX[index]);
     const lastX = fresh ? x : this.lastX[index];
     const lastY = fresh ? y : this.lastY[index];
     this.lastX[index] = x;
@@ -575,7 +620,7 @@ function circleTexture(rimWidthPercent: number) {
   return new Texture({ source });
 }
 
-function drawShape(canvas: HTMLCanvasElement, rimWidthPercent: number, shape: ParticleShape) {
+function drawShape(canvas: HTMLCanvasElement, rimWidthPercent: number, shape: ParticleShape, spinMark = false) {
   const context = canvas.getContext('2d');
   if (!context) {
     throw new Error('2D canvas is not available for particle textures');
@@ -600,5 +645,32 @@ function drawShape(canvas: HTMLCanvasElement, rimWidthPercent: number, shape: Pa
     }
   }
   context.fill('evenodd');
+  if (spinMark && shape === 'circle') {
+    drawSpinMark(context, center, rimWidthPercent < 100);
+  }
+}
+
+// The circle's spoke, from the centre toward +x (rotation 0). On a filled
+// disc it is a dimmer slot; on a ring it is filled across the hollow, so the
+// ring reads as a one-spoke wheel. Both stay inside the disc.
+function drawSpinMark(context: CanvasRenderingContext2D, center: number, ring: boolean) {
+  const half = (SPIN_MARK_WIDTH * TEXTURE_RADIUS) / 2;
+  const length = SPIN_MARK_LENGTH * TEXTURE_RADIUS;
+  context.save();
+  context.beginPath();
+  context.arc(center, center, TEXTURE_RADIUS, 0, Math.PI * 2);
+  context.clip();
+  context.beginPath();
+  context.rect(center, center - half, length, half * 2);
+  context.moveTo(center + half, center);
+  context.arc(center, center, half, 0, Math.PI * 2);
+  if (ring) {
+    context.fillStyle = '#ffffff';
+  } else {
+    context.globalCompositeOperation = 'destination-out';
+    context.fillStyle = `rgba(0, 0, 0, ${1 - SPIN_MARK_ALPHA})`;
+  }
+  context.fill('nonzero');
+  context.restore();
 }
 

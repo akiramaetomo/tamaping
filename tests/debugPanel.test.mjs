@@ -105,7 +105,7 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
   assert.equal(formatDiagnosticNumber(Number.NaN, 4), 'n/a');
   assert.equal(formatDiagnosticNumber(0.123456, 4), '0.1235');
 
-  const lines = createAudioDebugLines({
+  const diagnostics = {
     enabled: true,
     contextState: 'running',
     lastResumeStatus: 'resolved',
@@ -169,7 +169,11 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
     silentFramesContextNotRunning: 11,
     silentFramesNoSelectedImpacts: 12,
     silentFramesVoiceCapFull: 13,
-  }, 'audio');
+  };
+  const lines = createAudioDebugLines(diagnostics, 'audio');
+
+  assert.ok(!lines.some((line) => line.startsWith('overlap_engine=')));
+  assert.ok(createAudioDebugLines(diagnostics, 'audio', 1 / 60, 'js').includes('overlap_engine=js'));
 
   assert.equal(lines[0], 'dotping_debug');
   assert.equal(lines[1], 'debug_profile=audio');
@@ -232,6 +236,21 @@ test('perf debug lines report collecting state before the first window closes', 
   assert.ok(lines.includes('viewport=390x844'));
   assert.ok(lines.includes('dpr=1.5 resolution=1.5'));
   assert.ok(lines.includes('particle_renderer=graphics'));
+});
+
+test('the overlay shows the Physical collision entry only while it applies', () => {
+  const quiet = createPerfDebugLines({ ...PERF_SCENE, summary: null, physicalEntry: null, restingDots: 0 });
+  assert.ok(!quiet.some((line) => line.startsWith('physical_entry=') || line.startsWith('resting_dots=')));
+  const busy = createPerfDebugLines({
+    ...PERF_SCENE, summary: null, physicalEntry: 'flow-out', restingDots: 41, physicalTargetFps: 60,
+  });
+  assert.ok(busy.includes('physical_entry=flow-out'));
+  assert.ok(busy.includes('physical_time_limit_ms=12.5 target_fps=60'));
+  assert.ok(!quiet.some((line) => line.startsWith('physical_time_limit_ms=')));
+  assert.ok(!busy.some((line) => line.startsWith('physical_entry_mode=')));
+  const legacy = createPerfDebugLines({ ...PERF_SCENE, summary: null, physicalEntryMode: 'held' });
+  assert.ok(legacy.includes('physical_entry_mode=held'));
+  assert.ok(busy.includes('resting_dots=41'));
 });
 
 test('perf debug lines format every phase as avg, p95 and max', () => {

@@ -30,11 +30,20 @@ export type ControlBallMode = 'persistent' | 'touch';
 export type DotCombiMode = 'off' | 'velocity';
 export type GravityMode = 'none' | 'gravity' | 'antigravity';
 export type ColliderLayout = 'split' | 'single';
+export type OverlapEngine = 'rapier' | 'js';
+// How a packed crowd enters `Physical collision`: `rest` (covered dots rest
+// and flow out, default) or `held` (the 2026-11-20 entry, `?entry=held`).
+export type PhysicalEntryMode = 'rest' | 'held';
 export type ParticleRenderer = 'sprite' | 'graphics';
 // Drawn body shape. Physics stays circular. `fish` is a fish seen from
 // above with a fixed tail; `sparkle` is the Rays X as a fixed body.
 export type BodyShape = 'circle' | 'star' | 'fish' | 'sparkle';
 export const BODY_SHAPES: readonly BodyShape[] = ['circle', 'star', 'fish', 'sparkle'];
+// Shape `Turn`: `off` keeps the shape upright, `motion` faces the direction
+// of travel (Star, Fish, Sparkle), `spin` turns with the body's physical
+// angle (every shape; the circle shows a spoke).
+export type ShapeTurn = 'off' | 'motion' | 'spin';
+export const SHAPE_TURNS: readonly ShapeTurn[] = ['off', 'motion', 'spin'];
 
 // [min, max] of the shape and effect multipliers and curves, shared by the
 // sliders and preset normalisation. Every multiplier's default is 1.
@@ -72,9 +81,9 @@ export type DotpingSettings = {
   // effects are drawn over it.
   particleShape: BodyShape;
   ballShape: BodyShape;
-  // The shape turns to the direction of motion (Star, Fish and Sparkle).
-  particleShapeTurn: boolean;
-  ballShapeTurn: boolean;
+  // See ShapeTurn. Older presets stored a boolean (true = motion).
+  particleShapeTurn: ShapeTurn;
+  ballShapeTurn: ShapeTurn;
   // Sparkle spike curvature, -1 to 1, like the Rays curve.
   particleShapeCurve: number;
   ballShapeCurve: number;
@@ -120,6 +129,18 @@ export type DotpingSettings = {
   wallRestitution: number;
   rapierLengthUnit: number;
   colliderLayout: ColliderLayout;
+  // Which engine moves `Independent overlap` particles: `js` (the TS
+  // engine, default) or `rapier` (`?ov=rapier`, kept for comparison until
+  // the Rapier overlap path is removed). Not part of presets. See
+  // `overlapParticles.ts`.
+  overlapEngine: OverlapEngine;
+  // Entry into `Physical collision` (`?entry=held` brings back the first
+  // version for comparison). Not part of presets. See `physicalEntry.ts`.
+  physicalEntryMode: PhysicalEntryMode;
+  // Target frame rate in `Physical collision` (`?physfps=`, a goal): sets
+  // the physics time limit above which covered dots rest. Not part of
+  // presets. See `physicalEntry.ts`.
+  physicalTargetFps: number;
   particleRenderer: ParticleRenderer;
   soundEnabled: boolean;
   audioBallWaveform: AudioWaveform;
@@ -154,8 +175,8 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   controlBallRimEnabled: true,
   particleShape: 'circle',
   ballShape: 'circle',
-  particleShapeTurn: true,
-  ballShapeTurn: true,
+  particleShapeTurn: 'motion',
+  ballShapeTurn: 'motion',
   particleShapeCurve: -0.75,
   ballShapeCurve: -0.75,
   particleShapeOpacity: 1,
@@ -192,6 +213,9 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   wallRestitution: 0.3,
   rapierLengthUnit: 1,
   colliderLayout: 'single',
+  overlapEngine: 'js',
+  physicalEntryMode: 'rest',
+  physicalTargetFps: 60,
   particleRenderer: 'sprite',
   soundEnabled: true,
   audioBallWaveform: 'triangle',

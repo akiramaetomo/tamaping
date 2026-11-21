@@ -206,7 +206,15 @@ async function runDesktop(page, url) {
   const factoryCount = await page.evaluate(
     `document.querySelectorAll('.hud__preset-select option[value^="factory:"]').length`,
   );
-  check('first visit: the factory list has 50 presets', factoryCount === 50, `${factoryCount}`);
+  check('first visit: the factory list has 43 presets', factoryCount === 43, `${factoryCount}`);
+  // Spec `Proposed Factory Preset Genres`: one drop-down group per genre, in
+  // the front bar and in Settings alike.
+  const genreGroups = await page.evaluate(`[...document.querySelectorAll('.hud__preset-select, .front-preset-bar__select')].map((select) =>
+    [...select.querySelectorAll('optgroup')].filter((group) => group.querySelector('option[value^="factory:"]'))
+      .map((group) => group.label + ':' + group.querySelectorAll('option').length).join(' '))`);
+  const expectedGenres = 'Basics:5 Watch:7 Synth:4 Instruments:4 Toys:8 Creatures:8 Art:1 AI-made:6';
+  check('first visit: the factory presets are grouped by genre',
+    genreGroups.length === 2 && genreGroups.every((groups) => groups === expectedGenres), JSON.stringify(genreGroups));
   // Second visit: the saved list is read, nothing more goes in.
   await loadApp(page, url, DESKTOP);
   check('second visit: still the same 11 user presets',
@@ -329,7 +337,7 @@ async function runSettingsCards(page, url) {
       sideScroll: panel.scrollWidth > panel.clientWidth,
     };
   })()`);
-  check('Settings tabs: no All tab', !tabs.ids.includes('all') && tabs.ids.length === 8, tabs.ids.join());
+  check('Settings tabs: no All tab, Snap after My', !tabs.ids.includes('all') && tabs.ids.length === 9 && tabs.ids[1] === 'snap', tabs.ids.join());
   check('Settings tabs: a new browser opens My, one card, no sideways scroll',
     tabs.selected === 'my' && tabs.visibleCards === 1 && !tabs.sideScroll, JSON.stringify(tabs));
 
@@ -377,12 +385,13 @@ async function runSettingsCards(page, url) {
   await page.evaluate(weaveToggle);
   check('Ball card: Circle shows Turn and Opacity', card.shapeRows.join() === 'Turn,Opacity', card.shapeRows.join());
   const shapeTurn = await page.evaluate(`(() => {
-    const row = document.querySelectorAll('[data-section="ball.details"] .hud__subgroup')[2]
-      .querySelector('.hud__subgroup-body .hud__toggle');
-    return { checked: row.querySelector('input').checked, disabled: row.querySelector('input').disabled };
+    const select = document.querySelectorAll('[data-section="ball.details"] .hud__subgroup')[2]
+      .querySelector('.hud__subgroup-body select');
+    return { value: select.value, disabled: select.disabled, options: [...select.options].map((o) => o.value).join() };
   })()`);
-  check('Ball card: Circle Turn is on by default and greyed out',
-    shapeTurn.checked && shapeTurn.disabled, JSON.stringify(shapeTurn));
+  check('Ball card: Circle Turn is a choice of Off, Motion and Spin, Motion by default, enabled',
+    shapeTurn.value === 'motion' && !shapeTurn.disabled && shapeTurn.options === 'off,motion,spin',
+    JSON.stringify(shapeTurn));
   check('Ball card: an effect that is off hides its rows', card.raysRows.length === 0, card.raysRows.join());
 
   await page.evaluate(`${BALL_FX_TOGGLE.main}.click()`);
@@ -591,7 +600,7 @@ const MY_PANEL_ROWS = `[...document.querySelectorAll('.hud__my-items .hud__pick'
 const OWN_MY_PANEL = `localStorage.getItem('dotping.myPanel.v1')`;
 const SAVED_PRESET_ROWS = `JSON.parse(localStorage.getItem('dotping.userPresets.v2'))[0].settings.myPanelItems`;
 
-const FACTORY_WITHOUT_ROWS = 'factory:factory-6';
+const FACTORY_WITHOUT_ROWS = 'factory:factory-14';
 
 // A preset's rows against the browser's own list, driven through the real UI.
 async function runPresetMyPanel(page, url) {
@@ -669,7 +678,7 @@ async function runPresetMyPanel(page, url) {
     const saved = await page.evaluate(SAVED_PRESET_ROWS);
     check(`preset My Panel ${label}: saving stores the shown rows`, same(saved, ['audio.sound']), `${saved}`);
 
-    // F06 (Jelly Synth) carries no My Panel rows of its own.
+    // F14 (Jelly Synth) carries no My Panel rows of its own.
     await page.evaluate(selectPreset(FACTORY_WITHOUT_ROWS));
     await sleep(100);
     await showRows('a preset without rows shows the browser list', ['Random']);
@@ -723,6 +732,190 @@ async function runPresetMyPanel(page, url) {
     await showRows('other rows rebuild My Panel from its Preset row', ['Preset', 'Flash']);
     check(`preset My Panel ${label}: the rebuilt Preset row shows the chosen preset`,
       !rebuilt.kept && rebuilt.value === 'user:1', JSON.stringify(rebuilt));
+    await sleep(800);
+  }
+  await page.evaluate(`${CLEAR_STORAGE}`);
+}
+
+// Snap panel slots 1-4, Rec and Del (spec: `Snap Panel`).
+const SNAPSHOT_BAR = `(() => {
+  const read = (host) => {
+    const bar = host?.querySelector('.hud__snapshots');
+    if (!bar) return null;
+    return {
+      hidden: bar.hidden || bar.closest('[hidden]') !== null,
+      slots: [...bar.querySelectorAll('.hud__snapshot')].map((button) => ({
+        filled: !button.classList.contains('is-empty'),
+        lit: button.getAttribute('aria-pressed') === 'true',
+        disabled: button.disabled,
+      })),
+      recShown: !bar.querySelector('.hud__snapshot-rec').hidden,
+      delShown: !bar.querySelector('.hud__snapshot-del').hidden,
+      deleting: bar.querySelector('.hud__snapshot-del').getAttribute('aria-pressed') === 'true',
+      recording: bar.querySelector('.hud__snapshot-rec').getAttribute('aria-pressed') === 'true',
+    };
+  };
+  return {
+    pinned: read(document.querySelector('.pinned-settings .hud__group--snap')),
+    panel: read(document.querySelector('.hud__group--snap')),
+    myPanelSlots: document.querySelectorAll('.hud__group--my .hud__snapshot').length,
+    snapTab: [...document.querySelectorAll('.hud__tab')].map((tab) => tab.dataset.tab).join(),
+    front: [...document.querySelectorAll('.pinned-settings > .hud__group')]
+      .map((group) => (group.classList.contains('hud__group--snap') ? 'snap' : group.classList.contains('hud__group--my') ? 'my' : 'card')),
+    pageScroll: document.documentElement.scrollWidth,
+  };
+})()`;
+const SNAPSHOT_SLIDER = `document.querySelector('.hud__group--my .hud__my-items input[type="range"]')`;
+const pressSnapshot = (index) => `document.querySelectorAll('.hud__group--snap .hud__snapshot')[${index}].click()`;
+const PRESS_REC = `document.querySelector('.hud__group--snap .hud__snapshot-rec').click()`;
+const PRESS_DEL = `document.querySelector('.hud__group--snap .hud__snapshot-del').click()`;
+const setSnapshotSlider = (value) => `(() => {
+  const input = ${SNAPSHOT_SLIDER};
+  input.value = ${JSON.stringify(String(value))};
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return input.value;
+})()`;
+
+async function runMyPanelSnapshots(page, url) {
+  for (const [label, viewport] of [['1280px', DESKTOP], ['360px', PHONE]]) {
+    await page.evaluate(`(() => {
+      ${CLEAR_STORAGE};
+      localStorage.setItem('dotping.userPresets.v1', ${JSON.stringify(JSON.stringify([{
+        name: 'Snaps',
+        settings: { pinnedGroup: null, myPanelItems: ['mode.gravityStrength'] },
+      }]))});
+    })()`);
+    await loadApp(page, url, viewport);
+    const bar = () => page.evaluate(SNAPSHOT_BAR);
+    const pattern = (state, key) => state.panel.slots.map((slot) => (slot[key] ? 1 : 0)).join('');
+
+    await page.evaluate(selectPreset('user:0'));
+    await sleep(100);
+    let state = await bar();
+    check(`snapshots ${label}: Snap has its own tab after My, and My Panel has no slots`,
+      state.snapTab.startsWith('my,snap,') && state.myPanelSlots === 0, `${state.snapTab} ${state.myPanelSlots}`);
+    check(`snapshots ${label}: a preset without snapshots shows 4 empty, disabled slots and Rec`,
+      state.panel.slots.length === 4 && pattern(state, 'filled') === '0000'
+        && pattern(state, 'disabled') === '1111' && state.panel.recShown,
+      JSON.stringify(state.panel));
+
+    const first = await page.evaluate(`${SNAPSHOT_SLIDER}.value`);
+    await page.evaluate(PRESS_REC);
+    state = await bar();
+    check(`snapshots ${label}: Rec arms every slot`,
+      state.panel.recording && pattern(state, 'disabled') === '0000', JSON.stringify(state.panel));
+    await page.evaluate(pressSnapshot(0));
+    await sleep(100);
+    state = await bar();
+    check(`snapshots ${label}: recording fills and lights slot 1, turns Rec off and shows Modified`,
+      pattern(state, 'filled') === '1000' && pattern(state, 'lit') === '1000' && !state.panel.recording
+        && (await page.evaluate(PRESET_STATUS)) === 'Modified',
+      `${JSON.stringify(state.panel)} ${await page.evaluate(PRESET_STATUS)}`);
+
+    const second = await page.evaluate(setSnapshotSlider(Number(first) + 20));
+    state = await bar();
+    check(`snapshots ${label}: a hand change lights the slot off`, pattern(state, 'lit') === '0000',
+      JSON.stringify(state.panel));
+    await page.evaluate(PRESS_REC);
+    await page.evaluate(pressSnapshot(1));
+    await sleep(100);
+
+    await page.evaluate(pressSnapshot(0));
+    await sleep(100);
+    state = await bar();
+    const back = await page.evaluate(`${SNAPSHOT_SLIDER}.value`);
+    check(`snapshots ${label}: pressing slot 1 brings its values back and lights it`,
+      back === first && back !== second && pattern(state, 'lit') === '1000' && pattern(state, 'filled') === '1100',
+      `${first} -> ${second} -> ${back}`);
+    check(`snapshots ${label}: switching does not replay the start`,
+      (await page.evaluate(PRESET_STATUS)) === 'Modified', await page.evaluate(PRESET_STATUS));
+    check(`snapshots ${label}: the row fits the screen`, state.pageScroll <= viewport.width, `${state.pageScroll}`);
+
+    // Save, then a reload keeps the slots.
+    await page.evaluate(`(() => {
+      const slot = document.querySelector('.hud__preset-save-select');
+      slot.value = '0';
+      slot.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('.hud__preset-save').click();
+    })()`);
+    await sleep(100);
+    const saved = await page.evaluate(
+      `JSON.parse(localStorage.getItem('dotping.userPresets.v2'))[0].settings.snapshots?.map(Boolean)`,
+    );
+    check(`snapshots ${label}: Save stores the slots in the preset`,
+      JSON.stringify(saved) === JSON.stringify([true, true, false, false]), JSON.stringify(saved));
+    await sleep(800);
+    await loadApp(page, url, viewport);
+    state = await bar();
+    check(`snapshots ${label}: a reload keeps the slots`, pattern(state, 'filled') === '1100',
+      JSON.stringify(state.panel));
+
+    // Pinned: switching only, no Rec. Snap has its own pin, so My Panel can
+    // be pinned beside it; Snap sits at the bottom.
+    await page.evaluate(`document.querySelector('.hud__group--my .hud__pin-button:not(.hud__my-default)').click()`);
+    await page.evaluate(`document.querySelector('.hud__group--snap .hud__pin-button').click()`);
+    await page.evaluate(`document.querySelector('.hud__settings-close, .hud__close')?.click()`);
+    await sleep(100);
+    state = await bar();
+    const frontPins = await page.evaluate(`(() => ({
+      pins: [...document.querySelectorAll('.pinned-settings .hud__pin-button')]
+        .filter((button) => button.getClientRects().length > 0).length,
+      snapTitle: document.querySelector('.pinned-settings .hud__group--snap .hud__group-header')
+        ?.getClientRects().length ?? 0,
+      myTitle: document.querySelector('.pinned-settings .hud__group--my .hud__group-title')
+        ?.getClientRects().length ?? 0,
+    }))()`);
+    check(`snapshots ${label}: the front shows no Pinned buttons and no Snap title, My Panel keeps its title`,
+      frontPins.pins === 0 && frontPins.snapTitle === 0 && frontPins.myTitle > 0, JSON.stringify(frontPins));
+    check(`snapshots ${label}: pinned Snap shows below a pinned My Panel`,
+      JSON.stringify(state.front) === JSON.stringify(['my', 'snap']) && state.pageScroll <= viewport.width,
+      JSON.stringify(state.front));
+    if (state.pinned) {
+      check(`snapshots ${label}: the pinned Snap panel shows the slots without Rec or Del`,
+        !state.pinned.hidden && !state.pinned.recShown && !state.pinned.delShown && state.pinned.slots.length === 4,
+        JSON.stringify(state.pinned));
+      await page.evaluate(`document.querySelectorAll('.pinned-settings .hud__snapshot')[1].click()`);
+      await sleep(100);
+      state = await bar();
+      check(`snapshots ${label}: a slot on the pinned panel switches`,
+        state.pinned.slots[1].lit && (await page.evaluate(`${SNAPSHOT_SLIDER}.value`)) === second,
+        JSON.stringify(state.pinned));
+    } else {
+      check(`snapshots ${label}: the pinned Snap panel shows the slots without Rec or Del`, false, 'Snap not pinned in front');
+    }
+
+    // Del in Settings empties one slot and disarms itself.
+    await page.evaluate(`document.querySelector('.settings-button').click()`);
+    await sleep(100);
+    await page.evaluate(PRESS_DEL);
+    state = await bar();
+    check(`snapshots ${label}: Del arms only the filled slots`,
+      state.panel.delShown && state.panel.deleting && pattern(state, 'disabled') === '0011',
+      JSON.stringify(state.panel));
+    await page.evaluate(pressSnapshot(1));
+    await sleep(100);
+    state = await bar();
+    check(`snapshots ${label}: Del empties the tapped slot, turns off and shows Modified`,
+      pattern(state, 'filled') === '1000' && !state.panel.deleting
+        && (await page.evaluate(PRESET_STATUS)) === 'Modified',
+      `${JSON.stringify(state.panel)} ${await page.evaluate(PRESET_STATUS)}`);
+
+    // With its last slot emptied, the pinned Snap panel leaves the front.
+    await page.evaluate(PRESS_DEL);
+    await page.evaluate(pressSnapshot(0));
+    await page.evaluate(`document.querySelector('.hud__close')?.click()`);
+    await sleep(100);
+    state = await bar();
+    check(`snapshots ${label}: a pinned Snap panel without filled slots stays out of the front`,
+      !state.front.includes('snap'), JSON.stringify(state.front));
+
+    // A preset without snapshots empties the slots.
+    await page.evaluate(selectPreset(FACTORY_WITHOUT_ROWS));
+    await sleep(100);
+    state = await bar();
+    check(`snapshots ${label}: applying a preset without snapshots empties the slots`,
+      pattern(state, 'filled') === '0000', JSON.stringify(state.panel));
     await sleep(800);
   }
   await page.evaluate(`${CLEAR_STORAGE}`);
@@ -1133,6 +1326,7 @@ async function main() {
     await runSettingsCards(page, url);
     await runWorkProtection(page, url);
     await runPresetMyPanel(page, url);
+    await runMyPanelSnapshots(page, url);
     await runImportMerge(page, url);
     await runPresetStart(page, url);
     await runAutoBackup(page, url);

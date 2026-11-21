@@ -1,4 +1,4 @@
-import { presetFromSettings, type PresetSettings } from './presets';
+import { FACTORY_PRESETS, presetFromSettings, type PresetSettings } from './presets';
 import { DEFAULT_SETTINGS } from './settings';
 import type { Viewport } from './viewScale';
 
@@ -6,7 +6,7 @@ import type { Viewport } from './viewScale';
 // appear only in perf runs and never reach the front preset bar or the
 // public preset list. See `Proposed Performance Bench Presets` in the spec.
 
-export type BenchId = 'A' | 'B' | 'C' | 'D';
+export type BenchId = 'A' | 'B' | 'C' | 'D' | 'E';
 
 export type BenchPreset = {
   id: BenchId;
@@ -54,6 +54,16 @@ export const BENCH_PRESETS: readonly BenchPreset[] = [
     particleRadius: 4,
     particleRimWidth: 100,
   }),
+  // Dense gathering around the Ball with real collisions (2026-11-18): the
+  // stutter users see on PC and phones when Gravity packs a crowd.
+  benchPreset('E', '⏱ E Physical crowd', {
+    collisionMode: 'collision-physical',
+    gravityMode: 'gravity',
+    gravityStrength: 3,
+    particleCount: 2000,
+    particleRadius: 4,
+    particleRimWidth: 100,
+  }),
 ];
 
 export function benchPresetFor(id: string) {
@@ -73,4 +83,17 @@ export function benchPresetForValue(value: string) {
 export function benchIdFromParams(params: URLSearchParams): BenchId | null {
   const id = params.get('bench')?.trim().toUpperCase() ?? '';
   return benchPresetFor(id)?.id ?? null;
+}
+
+// `?bench=F09` measures a factory preset as it ships (its own design screen and
+// start), for real-use scenes next to the fixed benches. Null when the number
+// is missing or out of range.
+export function factoryBenchFromParams(params: URLSearchParams): { label: string; value: string } | null {
+  const match = /^F(\d{1,3})$/.exec(params.get('bench')?.trim().toUpperCase() ?? '');
+  if (!match) {
+    return null;
+  }
+  const number = Number(match[1]);
+  const preset = FACTORY_PRESETS[number - 1];
+  return preset ? { label: `F${String(number).padStart(2, '0')}`, value: `factory:${preset.id}` } : null;
 }

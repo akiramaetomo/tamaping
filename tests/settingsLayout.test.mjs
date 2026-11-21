@@ -27,7 +27,7 @@ test('settings tab defaults to My and keeps a saved tab that still exists', () =
   assert.equal(resolveInitialSettingsTab('all'), 'my');
   assert.deepEqual(
     SETTINGS_TABS.map(([id]) => id),
-    ['my', 'preset', 'mode', 'ball', 'particles', 'interaction', 'audio', 'utility'],
+    ['my', 'snap', 'preset', 'mode', 'ball', 'particles', 'interaction', 'audio', 'utility'],
   );
 });
 

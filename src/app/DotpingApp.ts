@@ -14,7 +14,6 @@ import {
   type TriggerTestMode,
 } from '../audio/triggerTiming';
 import { PixiRenderer } from '../render/pixiRenderer';
-import { shapeTurns } from '../render/motionFx';
 import {
   DotpingPhysicsWorld,
   type ImpactEvent,
@@ -25,13 +24,17 @@ import {
   createCurrentPresetExport,
   createUserPresetExport,
   deleteUserPreset,
+  emptySnapshotSlots,
   loadUserPresets,
   parsePresetImportFile,
   presetFromSettings,
+  presetSnapshotFromSettings,
+  presetSnapshotsEqual,
   saveUserPreset,
   storeUserPresets,
   type PresetPinnedGroup,
   type PresetSettings,
+  type PresetSnapshotSlots,
   type UserPreset,
 } from '../sim/presets';
 import { DEFAULT_PRESET_START, type PresetStart } from '../sim/presetStart';
@@ -62,6 +65,7 @@ import {
   type GravityMode,
   FX_RANGES,
   type BodyShape,
+  type ShapeTurn,
   type ParticleGlowMode,
   type ParticlePalette,
 } from '../sim/settings';
@@ -80,6 +84,7 @@ import {
   createSettingsTabs,
   createTextSelect,
 } from './controls';
+import { buildInfoLines, currentBuildInfo } from './buildInfo';
 import {
   DEBUG_COPY_FALLBACK_TEXT,
   DEFAULT_DEBUG_PROFILE,
@@ -91,6 +96,12 @@ import {
   debugProfileFromLocation,
   type DebugProfile,
 } from './debugPanel';
+import {
+  FIXED_STEP_SECONDS,
+  FixedStepClock,
+  MAX_FRAME_SECONDS,
+  stepPolicyFromParams,
+} from './stepClock';
 import {
   FILE_BACKUP_INTERVAL_MS,
   FileBackup,
@@ -104,6 +115,7 @@ import {
   benchIdFromParams,
   benchPresetForValue,
   benchPresetValue,
+  factoryBenchFromParams,
 } from '../sim/benchPresets';
 import { shouldShowSoundUnlock } from './soundUnlock';
 import { createMessageFormationTargets } from './messageFormationCanvas';
@@ -243,7 +255,10 @@ export class DotpingApp {
   private physics: DotpingPhysicsWorld | null = null;
   private settings: DotpingSettings = { ...DEFAULT_SETTINGS };
   private lastTime = 0;
-  private accumulator = 0;
+  // Fixed-step timing; `?step=legacy` keeps the 0.2.9 catch-up rule.
+  private readonly stepClock = new FixedStepClock(
+    stepPolicyFromParams(new URLSearchParams(window.location.search)),
+  );
   private frameHandle = 0;
   private fixedStepsLastFrame = 0;
   private averageStepMs = 0;
@@ -259,6 +274,8 @@ export class DotpingApp {
   private shownPerfSummaryVersion = -1;
   // performance.now() when the active bench scene started, or -1.
   private benchStartedAt = -1;
+  // `?bench=F09` under `?dbg=perf`: the factory preset being measured.
+  private factoryBench: { label: string; value: string } | null = null;
   private lastDebugText = '';
   private debugEl: HTMLDivElement | null = null;
   private debugCopyButton: HTMLButtonElement | null = null;
@@ -303,6 +320,21 @@ export class DotpingApp {
   private myPanelHintEl: HTMLParagraphElement | null = null;
   private myPanelPinButton: HTMLButtonElement | null = null;
   private myPanelDefaultButton: HTMLButtonElement | null = null;
+  // Snap panel slots of the work in progress (spec: `Snap Panel`). Applying a
+  // preset replaces them with the preset's own.
+  private snapshots: PresetSnapshotSlots = emptySnapshotSlots();
+  // The Snap panel's own pin, preset data like the other pin.
+  private snapPinned = false;
+  private snapEl: HTMLDivElement | null = null;
+  private readonly snapMarker = document.createComment('dotping snap group');
+  private snapHintEl: HTMLParagraphElement | null = null;
+  private snapPinButton: HTMLButtonElement | null = null;
+  // `rec` or `del` arms the slots for one tap; Settings only.
+  private snapshotMode: 'off' | 'rec' | 'del' = 'off';
+  private snapshotBarEl: HTMLDivElement | null = null;
+  private snapshotButtons: HTMLButtonElement[] = [];
+  private snapshotRecButton: HTMLButtonElement | null = null;
+  private snapshotDelButton: HTMLButtonElement | null = null;
   private settingsCards = new Map<SettingsCardId, HTMLElement>();
   private settingsTabs: ReturnType<typeof createSettingsTabs<SettingsTabId>> | null = null;
   private activeSettingsTab: SettingsTabId = 'my';
@@ -325,7 +357,13 @@ export class DotpingApp {
     this.settings = settingsFromUrl(DEFAULT_SETTINGS, window.location.search);
     const restored = this.beginWorkingStateRestore();
     if (restored) {
-      const { pinnedGroup: _pinnedGroup, myPanelItems: _myPanelItems, ...settings } = restored.settings;
+      const {
+        pinnedGroup: _pinnedGroup,
+        myPanelItems: _myPanelItems,
+        snapshots: _snapshots,
+        snapPinned: _snapPinned,
+        ...settings
+      } = restored.settings;
       this.settings = { ...this.settings, ...settings };
       this.designViewport = restored.designViewport;
     }
@@ -378,6 +416,14 @@ export class DotpingApp {
         this.syncUiFromSettings();
       }
     }
+    const factoryBench = this.debugProfile === 'perf' && !benchId
+      ? factoryBenchFromParams(new URLSearchParams(window.location.search))
+      : null;
+    if (factoryBench) {
+      this.applySelectedPreset(factoryBench.value);
+      this.factoryBench = factoryBench;
+      this.benchStartedAt = performance.now();
+    }
 
     if (restored) {
       this.finishWorkingStateRestore(restored);
@@ -409,6 +455,10 @@ export class DotpingApp {
   private finishWorkingStateRestore(restored: WorkingState) {
     // Restored, not replayed: the reload keeps the scene a fresh build gives.
     this.setPresetStart(restored.start);
+    this.snapshots = restored.settings.snapshots
+      ? [...restored.settings.snapshots]
+      : emptySnapshotSlots();
+    this.snapPinned = restored.settings.snapPinned === true;
     this.showPresetMyPanel(restored.settings.myPanelItems);
     this.setPinnedGroup(restored.settings.pinnedGroup ?? null, false);
     this.lastAppliedPresetValue = restored.lastAppliedValue;
@@ -418,16 +468,19 @@ export class DotpingApp {
       && presetSettingsForValue(restored.presetValue, this.userPresets)
     ) {
       // Rebuilt in the app's own key order, which the Modified comparison needs.
-      const { pinnedGroup, myPanelItems, ...snapshot } = restored.snapshot;
+      const { pinnedGroup, myPanelItems, snapshots, snapPinned, ...snapshot } = restored.snapshot;
       this.activePresetValue = restored.presetValue;
       // Unknown rows are skipped here too, as they are in the shown list.
       this.activePresetSnapshot = presetFromSettings(
         { ...this.settings, ...snapshot },
         pinnedGroup ?? null,
         myPanelFromPresetItems(myPanelItems, this.controls.ids())?.items,
+        snapshots,
+        snapPinned === true,
       );
     }
     this.syncUiFromSettings();
+    this.applyPinnedSettingsPlacement();
     this.syncPresetSelectSelection();
     const outcome = presetEditOutcome(
       this.currentPresetSettings(),
@@ -447,7 +500,13 @@ export class DotpingApp {
       allowed ? environment : { ...environment, pickFile: null },
       () => createAutosaveExport(
         this.userPresets,
-        presetFromSettings(this.settings, this.activePinnedGroupId, this.shownMyPanel.items),
+        presetFromSettings(
+          this.settings,
+          this.activePinnedGroupId,
+          this.shownMyPanel.items,
+          this.snapshots,
+          this.snapPinned,
+        ),
         presetFormationLabel(this.activePresetValue, this.userPresets),
         this.worldViewport(),
         this.presetStart,
@@ -534,17 +593,19 @@ export class DotpingApp {
       const profiler = this.activeProfiler();
       const tickStartedAt = profiler ? performance.now() : 0;
       profiler?.record('interval', time - this.lastTime);
-      const deltaSeconds = Math.min((time - this.lastTime) / 1000, 0.05);
+      const deltaSeconds = Math.min((time - this.lastTime) / 1000, MAX_FRAME_SECONDS);
       this.lastTime = time;
-      this.accumulator += deltaSeconds;
 
       physics.setPointer(this.pointer.active, this.pointer.x, this.pointer.y);
 
-      const fixedStep = 1 / 60;
       let impacts: ImpactEvent[] = [];
-      let fixedSteps = 0;
-      while (this.accumulator >= fixedStep) {
-        const result = physics.step(fixedStep);
+      const fixedSteps = this.stepClock.advance(deltaSeconds);
+      for (let step = 0; step < fixedSteps; step += 1) {
+        const stepStartedAt = performance.now();
+        const result = physics.step(FIXED_STEP_SECONDS);
+        this.stepClock.recordStepCost(performance.now() - stepStartedAt);
+        // Sound still takes only the last step's collisions (separate topic:
+        // `Proposed Audio From Every Step`).
         impacts = result.impacts;
         this.recordStepMetrics(result.metrics);
         if (profiler) {
@@ -552,11 +613,11 @@ export class DotpingApp {
           profiler.record('worldStep', result.metrics.durationMs);
           profiler.record('postStep', result.metrics.postStepMs);
         }
-        this.accumulator -= fixedStep;
-        fixedSteps += 1;
       }
       this.fixedStepsLastFrame = fixedSteps;
 
+      // Particle angles are read only while the particles draw their spin.
+      physics.readParticleAngles = this.settings.particleShapeTurn === 'spin';
       const snapshot = measurePhase(profiler, 'snapshot', () => physics.snapshot());
       measurePhase(profiler, 'build', () => renderer.render(snapshot));
       measurePhase(profiler, 'audio', () => this.audio.playImpacts(impacts));
@@ -578,7 +639,7 @@ export class DotpingApp {
     if (this.frameHandle !== 0) {
       cancelAnimationFrame(this.frameHandle);
     }
-    this.accumulator = 0;
+    this.stepClock.reset();
     this.lastTime = performance.now();
     this.frameProfiler.reset();
     this.frameHandle = requestAnimationFrame(this.tick);
@@ -586,7 +647,7 @@ export class DotpingApp {
 
   private pauseFrameLoop(error: unknown) {
     console.error('Dotping frame loop paused', error);
-    this.accumulator = 0;
+    this.stepClock.reset();
     this.fixedStepsLastFrame = 0;
     this.setPresetStatus('Scene paused - press Reset');
   }
@@ -1014,12 +1075,12 @@ export class DotpingApp {
     // per card; the effects below it are drawn over that shape. Each card's
     // controls come from the same builder, keyed by the settings prefix.
     type FxCard = 'ball' | 'particles';
-    type FxBoolKey = 'ShapeTurn' | 'FxRays' | 'FxRaysTurn' | 'FxTrail' | 'FxAfterglow';
+    type FxBoolKey = 'FxRays' | 'FxRaysTurn' | 'FxTrail' | 'FxAfterglow';
     type FxNumKey =
       | 'ShapeCurve' | 'ShapeOpacity' | 'FxRaysCurve' | 'FxTrailOpacity' | 'FxTrailLength'
       | 'FxAfterglowStrength' | 'FxAfterglowLength';
     const fxPrefix = (card: FxCard) => (card === 'ball' ? 'ball' : 'particle');
-    const fxKey = <K extends FxBoolKey | FxNumKey | 'Shape'>(card: FxCard, key: K) =>
+    const fxKey = <K extends FxBoolKey | FxNumKey | 'Shape' | 'ShapeTurn'>(card: FxCard, key: K) =>
       `${fxPrefix(card)}${key}` as `${'ball' | 'particle'}${K}`;
     const fxName = (card: FxCard) => (card === 'ball' ? 'Ball' : 'Particle');
     const shapeSelect = (card: FxCard) => {
@@ -1094,11 +1155,25 @@ export class DotpingApp {
     // toggle, kept in step by the control registry.
     const shapeEffectControls = (card: FxCard) => {
       const shape = shapeSelect(card);
-      // Shape `Turn`: a star, fish or sparkle turns its front to the
-      // direction of motion. Separate from the Rays `Turn`, so an upright X
-      // can sit on a turning fish.
-      const shapeTurn = fxToggle(card, 'ShapeTurn', 'Turn', 'ShapeTurn', () => shapeTurns(shapeOf(card)), 'shape turn');
-      // Stays visible, greyed out, for a Circle: it shows the option exists.
+      // Shape `Turn`: `Motion` turns a star, fish or sparkle's front to the
+      // direction of motion; `Spin` turns any shape with the body's physical
+      // angle (a circle shows a spoke). Separate from the Rays `Turn`, so an
+      // upright X can sit on a turning fish. The id stays `fxShapeTurn` for
+      // saved My Panels.
+      const turnKey = fxKey(card, 'ShapeTurn');
+      const shapeTurn = el(selectSetting<ShapeTurn>({
+        id: `${card}.fxShapeTurn`,
+        card,
+        label: 'Turn',
+        panelLabel: `${fxName(card)} shape turn`,
+        options: [
+          ['off', 'Off'],
+          ['motion', 'Motion'],
+          ['spin', 'Spin'],
+        ],
+        read: () => this.settings[turnKey],
+        onChange: (value) => this.updateSettings({ [turnKey]: value as ShapeTurn }, false),
+      }));
       shapeTurn.classList.add('hud__row--keep-visible');
       const shapeDetails = createSettingsSubgroup('Shape', [
         shapeTurn,
@@ -1199,15 +1274,20 @@ export class DotpingApp {
       card: 'interaction',
       label: 'Friction',
       panelLabel: 'Friction',
+      // 0 to 1 on a square scale (value = position^2), so small values keep
+      // fine steps and the rolling regime near 1 is reachable.
       min: 0,
-      max: 0.25,
+      max: 1,
       step: 0.005,
-      slider: () => this.settings.controlBallFriction,
+      slider: () => Math.sqrt(Math.max(this.settings.controlBallFriction, 0)),
       format: () => this.settings.controlBallFriction.toFixed(3),
-      onInput: (value) => this.updateSettings({
-        controlBallFriction: value,
-        particleFriction: value,
-      }),
+      onInput: (position) => {
+        const value = Math.round(position * position * 10000) / 10000;
+        this.updateSettings({
+          controlBallFriction: value,
+          particleFriction: value,
+        });
+      },
     }));
 
     const audioBallTab = document.createElement('button');
@@ -1427,6 +1507,7 @@ export class DotpingApp {
       reset,
     ]);
     const myGroup = this.createMyPanelGroup();
+    const snapGroup = this.createSnapGroup();
     const modeMarker = this.registerPinnableGroup('mode', 'Mode', modeGroup, modePin);
     const ballMarker = this.registerPinnableGroup('ball', 'Ball', ballGroup, ballPin);
     const particlesMarker = this.registerPinnableGroup(
@@ -1445,6 +1526,7 @@ export class DotpingApp {
     this.settingsCards = new Map<SettingsCardId, HTMLElement>([
       ['preset', presetGroup],
       ['my', myGroup],
+      ['snap', snapGroup],
       ['mode', modeGroup],
       ['ball', ballGroup],
       ['particles', dotsGroup],
@@ -1467,6 +1549,8 @@ export class DotpingApp {
       presetGroup,
       this.myPanelMarker,
       myGroup,
+      this.snapMarker,
+      snapGroup,
       modeMarker,
       modeGroup,
       ballMarker,
@@ -1611,7 +1695,13 @@ export class DotpingApp {
   // The current state as a preset. Rows are included only while a preset's copy
   // is shown; the browser's own list is not part of the preset.
   private currentPresetSettings() {
-    return presetFromSettings(this.settings, this.activePinnedGroupId, this.presetMyPanel?.items);
+    return presetFromSettings(
+      this.settings,
+      this.activePinnedGroupId,
+      this.presetMyPanel?.items,
+      this.snapshots,
+      this.snapPinned,
+    );
   }
 
   // Rebuilds the rows only when they change, so choosing a preset from the
@@ -1693,6 +1783,161 @@ export class DotpingApp {
     const group = createSettingsGroup('My Panel', 'my', [hint, items], [restoreDefault, pin]);
     this.myPanelEl = group;
     return group;
+  }
+
+  // The Snap panel: slots 1 to 4 with `Rec` and `Del`, and a pin of its own.
+  private createSnapGroup() {
+    const pin = document.createElement('button');
+    pin.className = 'hud__button hud__pin-button';
+    pin.type = 'button';
+    pin.addEventListener('click', () => this.toggleSnapPinned());
+    this.snapPinButton = pin;
+
+    const hint = document.createElement('p');
+    hint.className = 'hud__snap-hint';
+    hint.textContent = 'Tap Rec, then a slot, to keep the current settings.';
+    this.snapHintEl = hint;
+
+    const group = createSettingsGroup('Snap', 'snap', [this.createSnapshotBar(), hint], [pin]);
+    this.snapEl = group;
+    return group;
+  }
+
+  private toggleSnapPinned() {
+    this.snapPinned = !this.snapPinned;
+    this.applyPinnedSettingsPlacement();
+    this.markPresetCustom();
+    this.scheduleWorkingStateSave();
+  }
+
+  // Slot buttons 1 to 4, `Rec` and `Del`. Spec: `Snap Panel`.
+  private createSnapshotBar() {
+    const bar = document.createElement('div');
+    bar.className = 'hud__snapshots';
+    this.snapshotButtons = this.snapshots.map((_, index) => {
+      const button = document.createElement('button');
+      button.className = 'hud__button hud__snapshot';
+      button.type = 'button';
+      button.textContent = `${index + 1}`;
+      button.addEventListener('click', () => this.pressSnapshot(index));
+      bar.append(button);
+      return button;
+    });
+
+    const modeButton = (mode: 'rec' | 'del', text: string) => {
+      const button = document.createElement('button');
+      button.className = `hud__button hud__snapshot-mode hud__snapshot-${mode}`;
+      button.type = 'button';
+      button.textContent = text;
+      button.addEventListener('click', () => {
+        this.snapshotMode = this.snapshotMode === mode || this.isSnapPinnedShown() ? 'off' : mode;
+        this.syncSnapshotBar();
+      });
+      bar.append(button);
+      return button;
+    };
+    this.snapshotRecButton = modeButton('rec', 'Rec');
+    this.snapshotDelButton = modeButton('del', 'Del');
+    this.snapshotBarEl = bar;
+    return bar;
+  }
+
+  private isSnapPinnedShown() {
+    return this.snapEl?.classList.contains('hud__group--pinned') ?? false;
+  }
+
+  private pressSnapshot(index: number) {
+    const mode = this.isSnapPinnedShown() ? 'off' : this.snapshotMode;
+    if (mode === 'rec') {
+      this.setSnapshotSlot(index, presetSnapshotFromSettings(this.settings));
+    } else if (mode === 'del') {
+      this.setSnapshotSlot(index, null);
+    } else {
+      this.applySnapshot(index);
+    }
+  }
+
+  // Records or empties one slot, then disarms `Rec` / `Del`.
+  private setSnapshotSlot(index: number, snapshot: PresetSnapshotSlots[number]) {
+    const next = [...this.snapshots];
+    next[index] = snapshot;
+    this.snapshots = next;
+    this.snapshotMode = 'off';
+    this.markPresetCustom();
+    // A pinned Snap panel may appear or go with its last slot.
+    this.applyPinnedSettingsPlacement();
+    this.scheduleWorkingStateSave();
+  }
+
+  // Live switch: the same path as changing the controls by hand, without
+  // replaying the start, so the dots keep moving.
+  private applySnapshot(index: number) {
+    const snapshot = this.snapshots[index];
+    if (!snapshot) {
+      return;
+    }
+    this.updateSettings({ ...snapshot });
+    this.syncUiFromSettings();
+  }
+
+  private hasSnapshots() {
+    return this.snapshots.some(Boolean);
+  }
+
+  private syncSnapshotBar() {
+    const bar = this.snapshotBarEl;
+    if (!bar) {
+      return;
+    }
+    const pinned = this.isSnapPinnedShown();
+    if (this.snapHintEl) {
+      this.snapHintEl.hidden = pinned || this.hasSnapshots();
+    }
+    if (pinned) {
+      // A tap on the pinned panel only ever switches.
+      this.snapshotMode = 'off';
+    }
+    const mode = this.snapshotMode;
+    const current = presetSnapshotFromSettings(this.settings);
+    bar.hidden = pinned && !this.hasSnapshots();
+    bar.classList.toggle('is-recording', mode === 'rec');
+    bar.classList.toggle('is-deleting', mode === 'del');
+    this.snapshotButtons.forEach((button, index) => {
+      const snapshot = this.snapshots[index];
+      const lit = presetSnapshotsEqual(snapshot, current);
+      // Rec arms every slot; Del and plain switching need a filled one.
+      button.disabled = !snapshot && mode !== 'rec';
+      button.classList.toggle('is-empty', !snapshot);
+      button.setAttribute('aria-pressed', `${lit}`);
+      button.title = mode === 'rec'
+        ? `Record the current settings in slot ${index + 1}`
+        : !snapshot
+          ? `Slot ${index + 1} is empty`
+          : mode === 'del'
+            ? `Empty slot ${index + 1}`
+            : `Switch to snapshot ${index + 1}`;
+      button.setAttribute('aria-label', button.title);
+    });
+    const syncModeButton = (
+      button: HTMLButtonElement | null,
+      own: 'rec' | 'del',
+      idle: string,
+      armed: string,
+    ) => {
+      if (!button) {
+        return;
+      }
+      button.hidden = pinned;
+      // Del has nothing to empty without a filled slot.
+      button.disabled = own === 'del' && !this.hasSnapshots();
+      button.setAttribute('aria-pressed', `${mode === own}`);
+      button.title = mode === own ? armed : idle;
+      button.setAttribute('aria-label', button.title);
+    };
+    syncModeButton(this.snapshotRecButton, 'rec',
+      'Record the current settings: tap Rec, then a slot', 'Cancel recording');
+    syncModeButton(this.snapshotDelButton, 'del',
+      'Empty a slot: tap Del, then a slot', 'Cancel emptying');
   }
 
   private renderMyPanel() {
@@ -1866,6 +2111,7 @@ export class DotpingApp {
     this.renderer?.setBallPalette(this.settings.controlBallPalette);
     this.renderer?.setBallRimEnabled(this.settings.controlBallRimEnabled);
     this.applyMotionFx();
+    this.syncSnapshotBar();
     this.scheduleWorkingStateSave();
   }
 
@@ -2082,6 +2328,10 @@ export class DotpingApp {
     if (myPanel) {
       restore(this.myPanelMarker, myPanel);
     }
+    const snap = this.snapEl;
+    if (snap) {
+      restore(this.snapMarker, snap);
+    }
     for (const group of this.pinnableGroups) {
       restore(group.marker, group.element);
     }
@@ -2099,9 +2349,14 @@ export class DotpingApp {
       myPanelPinned &&
       this.shownMyPanel.items.length > 0,
     );
+    // Its own pin, so it can show beside My Panel or a card. Only filled
+    // slots are worth a place in front.
+    const showSnap = Boolean(
+      pinnedHost && snap && !settingsOpen && this.snapPinned && this.hasSnapshots(),
+    );
 
     if (pinnedHost) {
-      pinnedHost.hidden = !showPinnedGroup && !showMyPanel;
+      pinnedHost.hidden = !showPinnedGroup && !showMyPanel && !showSnap;
       if (showMyPanel && myPanel) {
         pinnedHost.appendChild(myPanel);
       }
@@ -2111,9 +2366,21 @@ export class DotpingApp {
       } else {
         delete pinnedHost.dataset.group;
       }
+      // Last, so it sits at the bottom, nearest the thumb.
+      if (showSnap && snap) {
+        pinnedHost.appendChild(snap);
+      }
     }
 
     myPanel?.classList.toggle('hud__group--pinned', showMyPanel);
+    snap?.classList.toggle('hud__group--pinned', showSnap);
+    this.syncSnapshotBar();
+    if (this.snapPinButton) {
+      this.snapPinButton.textContent = this.snapPinned ? 'Pinned' : 'Pin';
+      this.snapPinButton.title = this.snapPinned ? 'Unpin Snap' : 'Pin Snap to front';
+      this.snapPinButton.setAttribute('aria-label', this.snapPinButton.title);
+      this.snapPinButton.setAttribute('aria-pressed', `${this.snapPinned}`);
+    }
     // `Default` only fills an empty panel, and never shows on the pinned panel,
     // where it sat next to the Pin button and replaced rows on a mistaken tap.
     if (this.myPanelDefaultButton) {
@@ -2305,7 +2572,10 @@ export class DotpingApp {
     selectedValue: string,
     start: PresetStart | null = null,
   ) {
-    const { pinnedGroup, myPanelItems, ...settings } = preset;
+    const { pinnedGroup, myPanelItems, snapshots, snapPinned, ...settings } = preset;
+    this.snapshots = snapshots ? [...snapshots] : emptySnapshotSlots();
+    this.snapPinned = snapPinned === true;
+    this.snapshotMode = 'off';
     this.updateSettings(settings, true, false);
     this.showPresetMyPanel(myPanelItems);
     if (Object.prototype.hasOwnProperty.call(preset, 'pinnedGroup')) {
@@ -2318,6 +2588,7 @@ export class DotpingApp {
     this.syncPresetSelectSelection();
     this.setPresetStart(start ?? DEFAULT_PRESET_START);
     this.applyPresetStart();
+    this.applyPinnedSettingsPlacement();
     this.setPresetStatus('Applied');
   }
 
@@ -2398,6 +2669,8 @@ export class DotpingApp {
       this.worldViewport(),
       this.shownMyPanel.items,
       this.presetStart,
+      this.snapshots,
+      this.snapPinned,
     );
     this.downloadPresetJson(exportFile, presetExportFilename('dotping-current-preset', new Date()));
     this.setPresetStatus('Exported current');
@@ -2540,16 +2813,24 @@ export class DotpingApp {
         return;
       }
       this.shownPerfSummaryVersion = this.frameProfiler.summaryVersion;
-      this.lastDebugText = this.createPerfDebugLines().join('\n');
+      this.lastDebugText = this.withBuildLine(this.createPerfDebugLines()).join('\n');
       this.debugEl.textContent = this.lastDebugText;
       return;
     }
 
     const debugLines = this.debugProfile === 'audio'
-      ? createAudioDebugLines(this.audio.getDiagnostics(), this.debugProfile, deltaSeconds)
+      ? createAudioDebugLines(this.audio.getDiagnostics(), this.debugProfile, deltaSeconds, this.physics?.overlapEngine)
       : this.createPhysicsDebugLines(deltaSeconds, impactCount);
-    this.lastDebugText = debugLines.join('\n');
+    this.lastDebugText = this.withBuildLine(debugLines).join('\n');
     this.debugEl.textContent = this.lastDebugText;
+  }
+
+  // Right under the header in every profile: which code, Rapier build,
+  // secure context and URL switches are on screen (a stale dev server once
+  // served a removed Rapier, and plain http slows the iPad).
+  private withBuildLine(lines: string[]) {
+    const version = (this.rapier as { version?: () => string }).version?.() ?? '';
+    return [lines[0], ...buildInfoLines(currentBuildInfo(), version, window.location.search, window.isSecureContext), ...lines.slice(1)];
   }
 
   private activeProfiler() {
@@ -2569,9 +2850,19 @@ export class DotpingApp {
     const physics = this.requirePhysics();
     const renderer = this.requireRenderer();
     const bench = benchPresetForValue(this.activePresetValue);
+    const factoryBench = this.factoryBench?.value === this.activePresetValue ? this.factoryBench : null;
     return createPerfDebugLines({
       summary: this.frameProfiler.summary,
-      bench: bench
+      bench: factoryBench
+        ? {
+            id: factoryBench.label,
+            modified: !presetSettingsEqual(
+              presetFromSettings(this.settings, this.activePinnedGroupId),
+              presetSettingsForValue(factoryBench.value, this.userPresets)!,
+            ),
+            elapsedSeconds: (performance.now() - this.benchStartedAt) / 1000,
+          }
+        : bench
         ? {
             id: bench.id,
             modified: !presetSettingsEqual(
@@ -2588,6 +2879,14 @@ export class DotpingApp {
       particleRimWidth: this.settings.particleRimWidth,
       particleBrightnessResponse: this.settings.particleBrightnessResponse,
       colliderLayout: physics.colliderLayout,
+      overlapEngine: physics.overlapEngine,
+      physicalEntry: physics.physicalEntry,
+      restingDots: physics.restingParticleCount,
+      physicalEntryMode: this.settings.physicalEntryMode,
+      physicalTargetFps: this.settings.physicalTargetFps,
+      stepPolicy: this.stepClock.policy,
+      simSpeed: this.stepClock.simSpeed,
+      stepCostMs: this.stepClock.averageStepCostMs,
       colliderCount: physics.colliderCount,
       rendererName: renderer.rendererName,
       particleRenderer: renderer.particleRenderer,

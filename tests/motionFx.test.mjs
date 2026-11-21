@@ -25,8 +25,10 @@ import {
   scaledAlpha,
   sparkleScale,
   scaleColor,
+  bodyRotates,
   shapeRotation,
   shapeTurns,
+  showsSpinMark,
   speedFactor,
   trailAlpha,
   trailLength,
@@ -95,17 +97,30 @@ test('rays curve maps convex, straight and concave to superellipse exponents', (
 });
 
 test('shape turn only rotates shapes with a front', () => {
-  assert.equal(NO_MOTION_FX.shapeTurn, false);
+  assert.equal(NO_MOTION_FX.shapeTurn, 'off');
   assert.equal(shapeTurns('fish'), true);
   assert.equal(shapeTurns('star'), true);
   assert.equal(shapeTurns('circle'), false);
   assert.equal(shapeTurns('sparkle'), true);
-  assert.equal(shapeRotation('sparkle', true, 0.7), 0.7);
-  assert.equal(shapeRotation('fish', true, 1.2), 1.2);
+  assert.equal(shapeRotation('sparkle', 'motion', 0.7), 0.7);
+  assert.equal(shapeRotation('fish', 'motion', 1.2), 1.2);
   // The star points up, so a quarter turn puts a point along the heading.
-  assert.equal(shapeRotation('star', true, 0), Math.PI / 2);
-  assert.equal(shapeRotation('fish', false, 1.2), 0);
-  assert.equal(shapeRotation('circle', true, 1.2), 0);
+  assert.equal(shapeRotation('star', 'motion', 0), Math.PI / 2);
+  assert.equal(shapeRotation('fish', 'off', 1.2), 0);
+  assert.equal(shapeRotation('circle', 'motion', 1.2), 0);
+});
+
+test('shape turn Spin turns every shape by the body angle, and only the circle shows a spoke', () => {
+  for (const shape of ['circle', 'star', 'fish', 'sparkle']) {
+    assert.equal(bodyRotates(shape, 'spin'), true, shape);
+    assert.equal(bodyRotates(shape, 'off'), false, shape);
+    assert.equal(bodyRotates(shape, 'motion'), shapeTurns(shape), shape);
+    // The angle is used as it is (no star offset), and the heading is ignored.
+    assert.equal(shapeRotation(shape, 'spin', 1.2, -0.4), -0.4, shape);
+    assert.equal(showsSpinMark(shape, 'spin'), shape === 'circle', shape);
+    assert.equal(showsSpinMark(shape, 'motion'), false, shape);
+  }
+  assert.equal(shapeRotation('circle', 'spin', 0, Number.NaN), 0);
 });
 
 test('heading follows fast motion quickly and slow motion slowly', () => {

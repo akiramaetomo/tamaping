@@ -304,15 +304,20 @@ export function fillPresetOptions(
   custom.disabled = true;
   select.appendChild(custom);
 
-  const factoryGroup = document.createElement('optgroup');
-  factoryGroup.label = 'Factory Presets';
+  // One group per genre (spec `Proposed Factory Preset Genres`); the list is
+  // ordered by genre, so a new group starts where the genre changes.
+  let factoryGroup: HTMLOptGroupElement | null = null;
   for (const [index, preset] of FACTORY_PRESETS.entries()) {
+    if (factoryGroup?.label !== preset.genre) {
+      factoryGroup = document.createElement('optgroup');
+      factoryGroup.label = preset.genre;
+      select.appendChild(factoryGroup);
+    }
     const option = document.createElement('option');
     option.value = `factory:${preset.id}`;
     option.textContent = factorySlotLabel(index, preset.name, preset.formationLabel);
     factoryGroup.appendChild(option);
   }
-  select.appendChild(factoryGroup);
 
   const userGroup = document.createElement('optgroup');
   userGroup.label = 'User Presets';
