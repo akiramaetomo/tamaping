@@ -11,6 +11,7 @@ import {
 } from './fxTextures';
 import { AFTERGLOW_BAND_WIDTH, AFTERGLOW_STAMP_RADIUS, afterglowStampTextures } from './afterglow';
 import { FishMesh } from './fishMesh';
+import { RayMesh } from './rayMesh';
 import {
   AFTERGLOW_MAX_SECONDS,
   afterglowLife,
@@ -33,7 +34,7 @@ import {
   trailLength,
 } from './motionFx';
 import { particleColor } from './particleColors';
-import type { BodyShape, ShapeTurn } from '../sim/settings';
+import type { BodyShape, RayDrawing, ShapeTurn } from '../sim/settings';
 
 // `sparkle` hides the body batch and draws an additive X per dot instead.
 export type ParticleShape = BodyShape;
@@ -121,8 +122,15 @@ export class SpriteParticleLayer {
   private shapeTurn: ShapeTurn = 'off';
   private raysTurn = false;
   private raysCurve = -0.75;
+  // Dot Rays: one instanced mesh that hugs each X (`mesh`, rayMesh.ts), or
+  // one square sprite per dot (`quad`, `?rays=quad`, the drawing up to
+  // 0.3.0). `raysOn` is the Rays setting, whichever draws them.
+  private readonly rayMesh: RayMesh | null;
+  private raysOn = false;
+  // Device pixels per world unit, for the ray mesh's margin and the fill.
+  private pixelsPerUnit = 1;
 
-  constructor(rimWidthPercent: number) {
+  constructor(rimWidthPercent: number, readonly rayDrawing: RayDrawing = 'mesh') {
     this.rimWidthPercent = rimWidthPercent;
     this.bodyTexture = circleTexture(rimWidthPercent);
     this.body = new ParticleContainer<Particle>({
@@ -137,6 +145,11 @@ export class SpriteParticleLayer {
     this.sparkles.visible = false;
     this.sparkles.blendMode = 'add';
     this.view.addChild(this.halo, this.trails, this.body, this.sparkles, this.rays);
+    this.rayMesh = rayDrawing === 'mesh' ? new RayMesh(this.rayTexture) : null;
+    if (this.rayMesh) {
+      this.rayMesh.view.visible = false;
+      this.view.addChild(this.rayMesh.view);
+    }
   }
 
   setTuning(tuning: ParticleLayerTuning) {
@@ -210,7 +223,11 @@ export class SpriteParticleLayer {
       this.raysCurve = raysCurve;
       redrawRayTexture(this.rayTexture, rayShapeExponent(raysCurve));
     }
-    this.rays.visible = rays;
+    this.raysOn = rays;
+    this.rays.visible = rays && !this.rayMesh;
+    if (this.rayMesh) {
+      this.rayMesh.view.visible = rays;
+    }
     this.trails.visible = trail;
     if (!rays) {
       this.rays.removeParticles();
@@ -285,7 +302,33 @@ export class SpriteParticleLayer {
     this.bodyTexture.source.update();
   }
 
+  // Device pixels per world unit (view scale times renderer resolution).
+  setPixelScale(pixelsPerUnit: number) {
+    this.pixelsPerUnit = pixelsPerUnit;
+  }
+
+  // Rays fill this frame in device pixels: what was drawn, and what square
+  // sprites would draw. Null while dot Rays are off.
+  get rayFill() {
+    if (!this.raysOn) {
+      return null;
+    }
+    if (this.rayMesh) {
+      return this.rayMesh.fill(this.pixelsPerUnit);
+    }
+    let radiusSquares = 0;
+    for (const ray of this.rays.particleChildren) {
+      const radius = ray.scaleX * RAY_TEXTURE_RADIUS;
+      radiusSquares += radius * radius;
+    }
+    const square = 4 * radiusSquares * this.pixelsPerUnit * this.pixelsPerUnit;
+    return { drawn: square, square };
+  }
+
   setCount(count: number) {
+    if (this.raysOn && this.rayMesh) {
+      this.rayMesh.begin(count, this.pixelsPerUnit);
+    }
     if (this.dirX.length > count) {
       this.dirX.length = count;
       this.dirY.length = count;
@@ -338,7 +381,7 @@ export class SpriteParticleLayer {
     const turning = this.bodyTurns;
     const spin = this.shapeTurn === 'spin';
     const fish = this.shape === 'fish' ? this.fishMesh : null;
-    if (!this.trails.visible && !this.rays.visible && !turning && !fish) {
+    if (!this.trails.visible && !this.raysOn && !turning && !fish) {
       this.setBody(index, x, y, radius, color, alpha, 0, speed);
       return;
     }
@@ -346,7 +389,7 @@ export class SpriteParticleLayer {
     const factor = speedFactor(speed);
     // Spin turns the body by its own angle; the smoothed heading is still
     // needed for the trail and the rays.
-    const heading = this.trails.visible || this.rays.visible || (turning && !spin)
+    const heading = this.trails.visible || this.raysOn || (turning && !spin)
       ? this.smoothedHeading(index, vx, vy, speed, factor)
       : 0;
     if (fish) {
@@ -379,7 +422,16 @@ export class SpriteParticleLayer {
       // The Tail has its own Opacity; it does not follow the shape's.
       trail.color = particleColor(color, scaledAlpha(trailAlpha(factor) * alpha, this.trailOpacity));
     }
-    if (this.rays.visible) {
+    if (this.raysOn && this.rayMesh) {
+      this.rayMesh.setRay(
+        index,
+        x,
+        y,
+        rayScale(factor, radius),
+        this.raysTurn ? heading : 0,
+        particleColor(color, rayAlpha(factor)),
+      );
+    } else if (this.raysOn) {
       const ray = effectParticle(this.rays, index, this.rayTexture, 0.5);
       const scale = rayScale(factor, radius) / RAY_TEXTURE_RADIUS;
       ray.x = x;
@@ -394,6 +446,7 @@ export class SpriteParticleLayer {
   // Draws nothing for this dot this frame (a resting dot). Its afterglow
   // starts fresh where it shows again, so no band crosses the gap.
   hideParticle(index: number) {
+    this.rayMesh?.hideRay(index);
     for (const container of [this.body, this.trails, this.rays, this.sparkles]) {
       const sprite = container.particleChildren[index];
       if (sprite) {
@@ -527,6 +580,9 @@ export class SpriteParticleLayer {
   finishFrame() {
     if (this.shape === 'fish') {
       this.fishMesh?.finishFrame();
+    }
+    if (this.raysOn) {
+      this.rayMesh?.finishFrame();
     }
   }
 

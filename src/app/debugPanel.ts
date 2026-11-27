@@ -26,6 +26,8 @@ export type PerfDebugSnapshot = {
   colliderCount: number;
   // Engine for `Independent overlap` particles (`?ov=`).
   overlapEngine?: string;
+  // How the TS overlap engine meets a dot (`?bc=`).
+  overlapBallContact?: string;
   // `Physical collision` entry: spreading a packed crowd, or dots resting
   // under others (`flow-out` while they are released, `at-limit` while the
   // step has no room under the physics time limit, `field-full` while no
@@ -43,7 +45,12 @@ export type PerfDebugSnapshot = {
   simSpeed?: number;
   stepCostMs?: number;
   rendererName: string;
+  // Canvas multisampling (`?aa=off` turns it off).
+  antialias?: boolean;
   particleRenderer: string;
+  // Dot Rays while on: how they are drawn (`?rays=`) and the device pixels
+  // they paint this frame, against square sprites.
+  rayFill?: { drawing: string; drawn: number; square: number } | null;
   // PoC afterglow buffer: `off`, or its texture format while on.
   afterglow?: string;
   devicePixelRatio: number;
@@ -123,6 +130,9 @@ export function createPhysicsDebugLines(snapshot: PhysicsDebugSnapshot) {
     ...(snapshot.lastStepMetrics.overlapEngine
       ? [`overlap_engine=${snapshot.lastStepMetrics.overlapEngine}`]
       : []),
+    ...(snapshot.lastStepMetrics.overlapBallContact
+      ? [`ball_contact=${snapshot.lastStepMetrics.overlapBallContact}`]
+      : []),
     ...physicalEntryLines(
       snapshot.lastStepMetrics.physicalEntry,
       snapshot.lastStepMetrics.restingDots,
@@ -165,6 +175,30 @@ const PERF_PHASE_KEYS: Record<PerfPhase, string> = {
   audio: 'audio_ms',
 };
 
+// Perf history (Copy Debug only): one line per closed perf window, so one
+// session gives the whole curve without copying several times. 300
+// windows of 2 s are 10 minutes; older lines are dropped.
+export const PERF_HISTORY_LIMIT = 300;
+
+export function perfHistoryLine(
+  seconds: number,
+  summary: PerfSummary,
+  dots: number,
+  rayFill?: { drawn: number } | null,
+) {
+  const phase = (key: PerfPhase) => summary.phases[key].avg.toFixed(1);
+  return [
+    `t=${Math.round(seconds)}`,
+    `fps=${summary.fps.toFixed(1)}`,
+    `interval=${phase('interval')}`,
+    `tick=${phase('tick')}`,
+    `render=${phase('pixiRender')}`,
+    `steps=${summary.stepsAvg.toFixed(2)}`,
+    `dots=${dots}`,
+    ...(rayFill ? [`ray_mpx=${(rayFill.drawn / 1e6).toFixed(1)}`] : []),
+  ].join(' ');
+}
+
 // Phase times are per rendered frame; step phases sum every fixed step.
 export function createPerfDebugLines(snapshot: PerfDebugSnapshot) {
   const summary = snapshot.summary;
@@ -199,6 +233,7 @@ export function createPerfDebugLines(snapshot: PerfDebugSnapshot) {
     `collider_layout=${snapshot.colliderLayout}`,
     `colliders=${snapshot.colliderCount}`,
     ...(snapshot.overlapEngine ? [`overlap_engine=${snapshot.overlapEngine}`] : []),
+    ...(snapshot.overlapBallContact ? [`ball_contact=${snapshot.overlapBallContact}`] : []),
     ...physicalEntryLines(
       snapshot.physicalEntry,
       snapshot.restingDots,
@@ -206,7 +241,11 @@ export function createPerfDebugLines(snapshot: PerfDebugSnapshot) {
       snapshot.physicalTargetFps,
     ),
     `renderer=${snapshot.rendererName}`,
+    ...(snapshot.antialias === undefined ? [] : [`antialias=${snapshot.antialias ? 'on' : 'off'}`]),
     `particle_renderer=${snapshot.particleRenderer}`,
+    ...(snapshot.rayFill
+      ? [`rays=${snapshot.rayFill.drawing} fill_mpx=${(snapshot.rayFill.drawn / 1e6).toFixed(1)} square_mpx=${(snapshot.rayFill.square / 1e6).toFixed(1)}`]
+      : []),
     ...(snapshot.afterglow ? [`afterglow=${snapshot.afterglow}`] : []),
     `viewport=${Math.round(snapshot.viewport.width)}x${Math.round(snapshot.viewport.height)}`,
     `dpr=${snapshot.devicePixelRatio} resolution=${snapshot.resolution}`,
@@ -226,6 +265,7 @@ export function createAudioDebugLines(
   profile: DebugProfile,
   deltaSeconds?: number,
   overlapEngine?: string,
+  overlapBallContact?: string,
 ) {
   return [
     'dotping_debug',
@@ -235,6 +275,7 @@ export function createAudioDebugLines(
       : [`fps=${Math.round(1 / Math.max(deltaSeconds, 0.001))}`]),
     // The engine changes Ball-particle sounds of a resting crowd.
     ...(overlapEngine ? [`overlap_engine=${overlapEngine}`] : []),
+    ...(overlapBallContact ? [`ball_contact=${overlapBallContact}`] : []),
     `audio_enabled=${audio.enabled}`,
     `audio_context=${audio.contextState}`,
     `audio_resume=${audio.lastResumeStatus}`,

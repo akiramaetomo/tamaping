@@ -2,7 +2,7 @@ import type { DotpingSettings } from '../sim/settings';
 import { debugVisibleFromParams } from './debugPanel';
 
 // Hidden diagnostic overrides read from the page URL, such as `?lu=10`,
-// `?cl=split`, `?ov=js`, `?entry=held`, `?pr=graphics`, `?fx=trail` and `?debug=1`. Invalid values keep the defaults.
+// `?cl=split`, `?ov=js`, `?bc=sink`, `?entry=held`, `?pr=graphics`, `?rays=quad`, `?aa=on`, `?fx=trail` and `?debug=1`. Invalid values keep the defaults.
 export function settingsFromUrl(defaults: DotpingSettings, search: string): DotpingSettings {
   const params = new URLSearchParams(search);
   const settings = { ...defaults };
@@ -22,6 +22,11 @@ export function settingsFromUrl(defaults: DotpingSettings, search: string): Dotp
     settings.overlapEngine = overlapEngine;
   }
 
+  const ballContact = params.get('overlapBallContact') ?? params.get('bc');
+  if (ballContact === 'surface' || ballContact === 'sink' || ballContact === 'impact') {
+    settings.overlapBallContact = ballContact;
+  }
+
   const physicalEntryMode = params.get('physicalEntryMode') ?? params.get('entry');
   if (physicalEntryMode === 'rest' || physicalEntryMode === 'held') {
     settings.physicalEntryMode = physicalEntryMode;
@@ -35,6 +40,16 @@ export function settingsFromUrl(defaults: DotpingSettings, search: string): Dotp
   const particleRenderer = params.get('particleRenderer') ?? params.get('pr');
   if (particleRenderer === 'sprite' || particleRenderer === 'graphics') {
     settings.particleRenderer = particleRenderer;
+  }
+
+  const antialias = params.get('canvasAntialias') ?? params.get('aa');
+  if (antialias === 'on' || antialias === 'off') {
+    settings.canvasAntialias = antialias === 'on';
+  }
+
+  const rayDrawing = params.get('rayDrawing') ?? params.get('rays');
+  if (rayDrawing === 'mesh' || rayDrawing === 'quad') {
+    settings.rayDrawing = rayDrawing;
   }
 
   // `?fx=rays,trail,afterglow` turns the PoC motion effects on for dots and ball;

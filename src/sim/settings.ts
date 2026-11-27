@@ -31,10 +31,20 @@ export type DotCombiMode = 'off' | 'velocity';
 export type GravityMode = 'none' | 'gravity' | 'antigravity';
 export type ColliderLayout = 'split' | 'single';
 export type OverlapEngine = 'rapier' | 'js';
+// How the TS overlap engine meets a dot the Ball reaches within a step:
+// `impact` moves the Ball from impact to impact (default since
+// 2026-11-27); `surface` stops the Ball there (the 2026-11-22 contact,
+// `?bc=surface`); `sink` lets it move into the dot and pushes it out on the
+// next steps (0.3.0 and before, `?bc=sink`).
+export type OverlapBallContact = 'surface' | 'sink' | 'impact';
 // How a packed crowd enters `Physical collision`: `rest` (covered dots rest
 // and flow out, default) or `held` (the 2026-11-20 entry, `?entry=held`).
 export type PhysicalEntryMode = 'rest' | 'held';
 export type ParticleRenderer = 'sprite' | 'graphics';
+// How dot Rays are drawn: `mesh` (default) hugs each X; `quad` paints a
+// whole square sprite per dot (0.3.0 and before, `?rays=quad`). Both look
+// the same; `mesh` paints about a third of the pixels.
+export type RayDrawing = 'mesh' | 'quad';
 // Drawn body shape. Physics stays circular. `fish` is a fish seen from
 // above with a fixed tail; `sparkle` is the Rays X as a fixed body.
 export type BodyShape = 'circle' | 'star' | 'fish' | 'sparkle';
@@ -134,6 +144,10 @@ export type DotpingSettings = {
   // the Rapier overlap path is removed). Not part of presets. See
   // `overlapParticles.ts`.
   overlapEngine: OverlapEngine;
+  // TS overlap engine only (`?bc=surface` and `?bc=sink` bring back the
+  // earlier contacts for comparison). Not part of presets. See
+  // `overlapParticles.ts` and `ballImpacts.ts`.
+  overlapBallContact: OverlapBallContact;
   // Entry into `Physical collision` (`?entry=held` brings back the first
   // version for comparison). Not part of presets. See `physicalEntry.ts`.
   physicalEntryMode: PhysicalEntryMode;
@@ -142,6 +156,15 @@ export type DotpingSettings = {
   // presets. See `physicalEntry.ts`.
   physicalTargetFps: number;
   particleRenderer: ParticleRenderer;
+  // `?rays=quad` brings back the square ray sprites for comparison. Not
+  // part of presets.
+  rayDrawing: RayDrawing;
+  // Canvas multisampling (4x MSAA). Off by default since 2026-11-27: on an
+  // iPad it cost more than any effect, and sprites have their own soft
+  // edges; only vector shapes (the Ball, its trail, the table frame) lose
+  // a little smoothness (user: slight, acceptable). `?aa=on` brings it back.
+  // Not part of presets.
+  canvasAntialias: boolean;
   soundEnabled: boolean;
   audioBallWaveform: AudioWaveform;
   audioBallFrequencyHz: number;
@@ -214,9 +237,12 @@ export const DEFAULT_SETTINGS: DotpingSettings = {
   rapierLengthUnit: 1,
   colliderLayout: 'single',
   overlapEngine: 'js',
+  overlapBallContact: 'impact',
   physicalEntryMode: 'rest',
   physicalTargetFps: 60,
   particleRenderer: 'sprite',
+  rayDrawing: 'mesh',
+  canvasAntialias: false,
   soundEnabled: true,
   audioBallWaveform: 'triangle',
   audioBallFrequencyHz: 4000,

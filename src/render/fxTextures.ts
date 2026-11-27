@@ -1,4 +1,5 @@
 import { CanvasSource, Texture } from 'pixi.js';
+import { RAY_CORE_RADIUS, RAY_SPIKE_HALF_LENGTH, RAY_SPIKE_HALF_WIDTH } from './rayFootprint';
 
 // Canvas-drawn white textures for the experimental motion effects; color
 // comes from tint at draw time.
@@ -34,7 +35,8 @@ function drawRays(canvas: HTMLCanvasElement, exponent: number) {
   const center = RAY_TEXTURE_SIZE / 2;
   context.clearRect(0, 0, RAY_TEXTURE_SIZE, RAY_TEXTURE_SIZE);
 
-  const core = context.createRadialGradient(center, center, 0, center, center, center * 0.42);
+  // The X's measures live in rayFootprint.ts, whose outline must cover them.
+  const core = context.createRadialGradient(center, center, 0, center, center, center * RAY_CORE_RADIUS);
   core.addColorStop(0, 'rgba(255,255,255,0.9)');
   core.addColorStop(0.25, 'rgba(255,255,255,0.35)');
   core.addColorStop(1, 'rgba(255,255,255,0)');
@@ -43,9 +45,11 @@ function drawRays(canvas: HTMLCanvasElement, exponent: number) {
 
   // An X: two equal spikes at +-45 degrees to the texture's x axis, which
   // the sprite turns to the direction of motion.
-  // Thickness is a share of the texture size; 0.02 read as needles.
-  drawSpike(context, center, Math.PI / 4, 1, 0.05, exponent);
-  drawSpike(context, center, -Math.PI / 4, 1, 0.05, exponent);
+  // Thickness is a share of the texture size (0.05; 0.02 read as needles),
+  // half the spike's half-width in radii.
+  const thickness = RAY_SPIKE_HALF_WIDTH / 2;
+  drawSpike(context, center, Math.PI / 4, RAY_SPIKE_HALF_LENGTH, thickness, exponent);
+  drawSpike(context, center, -Math.PI / 4, RAY_SPIKE_HALF_LENGTH, thickness, exponent);
 }
 
 export function trailTexture() {

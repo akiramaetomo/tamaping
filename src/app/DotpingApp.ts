@@ -88,12 +88,14 @@ import { buildInfoLines, currentBuildInfo } from './buildInfo';
 import {
   DEBUG_COPY_FALLBACK_TEXT,
   DEFAULT_DEBUG_PROFILE,
+  PERF_HISTORY_LIMIT,
   DebugCopyFeedback,
   copyDebugText,
   createAudioDebugLines,
   createPerfDebugLines,
   createPhysicsDebugLines as createPhysicsDebugTextLines,
   debugProfileFromLocation,
+  perfHistoryLine,
   type DebugProfile,
 } from './debugPanel';
 import {
@@ -109,7 +111,7 @@ import {
   fileBackupRowView,
   type FileBackupAction,
 } from './fileBackup';
-import { FrameProfiler, measurePhase } from './frameProfiler';
+import { DEFAULT_PERF_WINDOW_MS, FrameProfiler, measurePhase } from './frameProfiler';
 import {
   BENCH_PRESETS,
   benchIdFromParams,
@@ -277,6 +279,8 @@ export class DotpingApp {
   // `?bench=F09` under `?dbg=perf`: the factory preset being measured.
   private factoryBench: { label: string; value: string } | null = null;
   private lastDebugText = '';
+  // Perf profile: one line per closed perf window, for Copy Debug.
+  private readonly perfHistory: string[] = [];
   private debugEl: HTMLDivElement | null = null;
   private debugCopyButton: HTMLButtonElement | null = null;
   private soundUnlockButton: HTMLButtonElement | null = null;
@@ -372,7 +376,12 @@ export class DotpingApp {
     this.userPresets = loadUserPresets();
     this.frontPresetBarVisible = loadFrontPresetBarVisible();
     this.viewScaleMode = loadViewScaleMode();
-    this.renderer = new PixiRenderer(this.root, this.settings.particleRenderer);
+    this.renderer = new PixiRenderer(
+      this.root,
+      this.settings.particleRenderer,
+      this.settings.rayDrawing,
+      this.settings.canvasAntialias,
+    );
     await this.renderer.init();
     this.view = this.computeView();
     this.renderer.setViewScale(this.view.scale);
@@ -2813,13 +2822,14 @@ export class DotpingApp {
         return;
       }
       this.shownPerfSummaryVersion = this.frameProfiler.summaryVersion;
+      this.recordPerfHistory();
       this.lastDebugText = this.withBuildLine(this.createPerfDebugLines()).join('\n');
       this.debugEl.textContent = this.lastDebugText;
       return;
     }
 
     const debugLines = this.debugProfile === 'audio'
-      ? createAudioDebugLines(this.audio.getDiagnostics(), this.debugProfile, deltaSeconds, this.physics?.overlapEngine)
+      ? createAudioDebugLines(this.audio.getDiagnostics(), this.debugProfile, deltaSeconds, this.physics?.overlapEngine, this.physics?.overlapBallContact)
       : this.createPhysicsDebugLines(deltaSeconds, impactCount);
     this.lastDebugText = this.withBuildLine(debugLines).join('\n');
     this.debugEl.textContent = this.lastDebugText;
@@ -2880,6 +2890,7 @@ export class DotpingApp {
       particleBrightnessResponse: this.settings.particleBrightnessResponse,
       colliderLayout: physics.colliderLayout,
       overlapEngine: physics.overlapEngine,
+      overlapBallContact: physics.overlapBallContact,
       physicalEntry: physics.physicalEntry,
       restingDots: physics.restingParticleCount,
       physicalEntryMode: this.settings.physicalEntryMode,
@@ -2889,7 +2900,9 @@ export class DotpingApp {
       stepCostMs: this.stepClock.averageStepCostMs,
       colliderCount: physics.colliderCount,
       rendererName: renderer.rendererName,
+      antialias: renderer.antialias,
       particleRenderer: renderer.particleRenderer,
+      rayFill: renderer.rayFillState,
       afterglow: renderer.afterglowState,
       devicePixelRatio: window.devicePixelRatio || 1,
       resolution: renderer.resolution,
@@ -2916,8 +2929,34 @@ export class DotpingApp {
     });
   }
 
+  private recordPerfHistory() {
+    const summary = this.frameProfiler.summary;
+    if (!summary || !this.physics || !this.renderer) {
+      return;
+    }
+    this.perfHistory.push(perfHistoryLine(
+      performance.now() / 1000,
+      summary,
+      this.physics.particleCount,
+      this.renderer.rayFillState,
+    ));
+    if (this.perfHistory.length > PERF_HISTORY_LIMIT) {
+      this.perfHistory.splice(0, this.perfHistory.length - PERF_HISTORY_LIMIT);
+    }
+  }
+
+  // The perf profile adds the history of every closed window, oldest first.
+  private debugCopyText() {
+    const text = this.lastDebugText || DEBUG_COPY_FALLBACK_TEXT;
+    if (this.debugProfile !== 'perf' || this.perfHistory.length === 0) {
+      return text;
+    }
+    const heading = `perf_history (one line per ${DEFAULT_PERF_WINDOW_MS / 1000} s window, t = seconds since the page opened)`;
+    return [text, heading, ...this.perfHistory].join('\n');
+  }
+
   private async copyDebug(sourceButton: HTMLButtonElement) {
-    if (await copyDebugText(this.lastDebugText || DEBUG_COPY_FALLBACK_TEXT)) {
+    if (await copyDebugText(this.debugCopyText())) {
       this.setPresetStatus('Copied debug');
       this.debugCopyFeedback.show(sourceButton);
     } else {

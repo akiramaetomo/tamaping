@@ -40,6 +40,11 @@ test('url settings accept only known overlap engines', () => {
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?ov=js').overlapEngine, 'js');
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?overlapEngine=rapier&ov=js').overlapEngine, 'rapier');
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?ov=wasm').overlapEngine, 'js');
+  assert.equal(DEFAULT_SETTINGS.overlapBallContact, 'impact');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?bc=sink').overlapBallContact, 'sink');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?overlapBallContact=sink').overlapBallContact, 'sink');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?bc=impact').overlapBallContact, 'impact');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?bc=soft').overlapBallContact, 'impact');
   assert.equal(DEFAULT_SETTINGS.physicalEntryMode, 'rest');
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?entry=held').physicalEntryMode, 'held');
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?entry=spill').physicalEntryMode, 'rest');
@@ -51,6 +56,14 @@ test('url settings accept only known overlap engines', () => {
 
 test('url settings accept only known particle renderers', () => {
   assert.equal(DEFAULT_SETTINGS.particleRenderer, 'sprite');
+  assert.equal(DEFAULT_SETTINGS.rayDrawing, 'mesh');
+  assert.equal(DEFAULT_SETTINGS.canvasAntialias, false);
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?aa=off').canvasAntialias, false);
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?aa=on').canvasAntialias, true);
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?aa=0').canvasAntialias, false);
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?rays=quad').rayDrawing, 'quad');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?rayDrawing=quad&rays=mesh').rayDrawing, 'quad');
+  assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?rays=sprite').rayDrawing, 'mesh');
   assert.equal(settingsFromUrl(DEFAULT_SETTINGS, '?pr=graphics').particleRenderer, 'graphics');
   assert.equal(
     settingsFromUrl(DEFAULT_SETTINGS, '?particleRenderer=sprite&pr=graphics').particleRenderer,

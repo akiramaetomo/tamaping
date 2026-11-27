@@ -100,6 +100,110 @@ test('a fast Ball cannot pass through a small particle', () => {
   assert.ok(result.vx < 6000);
 });
 
+test('a fast light Ball does not pull a heavy particle towards itself', () => {
+  // U43 `Spiral metalphone`: particle mass 100, Ball mass 0.1. A heavy
+  // particle hit part way through the step barely moves; its position
+  // correction must follow its own velocity change, not the Ball's rebound.
+  for (const speed of [600, 2500, 4000]) {
+    const store = new OverlapParticles(1);
+    store.set(0, 1000, 1000, 0, 0);
+    const start = 1000 - 42 - 5 - speed * DT * 0.5;
+    const light = ball({ x: start, vx: speed, radius: 30, mass: 0.1 });
+    const heavy = params({ radius: 12, mass: 100, restitution: 0.41 });
+    const result = store.solveBall(DT, light, heavy);
+    assert.ok(result.vx < 0, `${speed} px/s: the Ball rebounds`);
+    // The Ball's own move belongs to Rapier; here it only has to be present.
+    const after = { ...light, x: start + result.dx + result.vx * DT, vx: result.vx };
+    store.integrate(DT, after, heavy, []);
+    const moved = store.x[0] - 1000;
+    assert.ok(moved >= 0, `${speed} px/s: particle moved ${moved} px towards the Ball`);
+    assert.ok(moved < 0.1, `${speed} px/s: particle moved ${moved} px`);
+  }
+});
+
+test('a fast Ball stops at a heavy particle instead of rebounding short of it', () => {
+  // A dragged Ball pressed into a fixed dot used to rebound from where it
+  // started the step and float away (U43, up to 117 px). Like Rapier's CCD,
+  // it now ends the step at the impact and leaves on the next one.
+  const store = new OverlapParticles(1);
+  store.set(0, 1000, 1000, 0, 0);
+  const radius = 20;
+  const sumR = radius + 12;
+  const start = 1000 - sumR - 5;
+  const fast = ball({ x: start, vx: 3000, radius, mass: 0.1 });
+  const result = store.solveBall(DT, fast, params({ radius: 12, mass: 100, restitution: 0.41 }));
+  assert.ok(result.vx < 0, 'the Ball leaves the particle');
+  const end = start + result.dx + result.vx * DT;
+  const gap = 1000 - end - sumR;
+  assert.ok(Math.abs(gap) < 0.5, `gap ${gap} px`);
+});
+
+test('a Ball reaching a fixed particle within the step stops at its surface', () => {
+  // 900 px/s is 15 px per step, less than the Ball's radius: no CCD case.
+  // `surface` meets the particle at the impact; `sink` (the old contact,
+  // `?bc=sink`) lets the Ball move 10 px into it.
+  const run = (ballContact) => {
+    const store = new OverlapParticles(1);
+    store.set(0, 1000, 1000, 0, 0);
+    const radius = 20;
+    const sumR = radius + 12;
+    const start = 1000 - sumR - 5;
+    const held = ball({ x: start, vx: 900, radius, mass: 0.1 });
+    const result = store.solveBall(DT, held, params({ radius: 12, mass: 100, restitution: 0.41, ballContact }));
+    const end = start + result.dx + result.vx * DT;
+    return 1000 - end - sumR;
+  };
+  const surface = run('surface');
+  assert.ok(Math.abs(surface) < 0.5, `surface gap ${surface} px`);
+  assert.equal(run(undefined), surface);
+  const sink = run('sink');
+  assert.ok(Math.abs(sink + 10) < 0.5, `sink gap ${sink} px`);
+});
+
+test('a dragged Ball pressed into a fixed dot rests at its surface', () => {
+  // U43 `Spiral metalphone` with Ball Size 20: the pointer held 20 px past a
+  // dot that does not give way (mass 100, damping 83) against a Ball of mass
+  // 0.1. The old contact sank in and floated off, 6 steps a cycle.
+  const results = ['surface', 'sink'].map((overlapBallContact) => {
+    const w = new DotpingPhysicsWorld(RAPIER, 400, 400, {
+      ...DEFAULT_SETTINGS,
+      collisionMode: 'independence-overlapping',
+      overlapBallContact,
+      particleCount: 1,
+      particleRadius: 12,
+      particleMass: 100,
+      particleLinearDamping: 83,
+      controlBallRadius: 20,
+      controlBallMass: 0.1,
+      controlBallLinearDamping: 0,
+      contactRestitution: 0.41,
+    });
+    w.arrangeParticlesToTargets([{ x: 300, y: 200, vx: 0, vy: 0 }]);
+    w.setPointer(true, 200, 200);
+    for (let step = 0; step < 30; step += 1) w.step(DT);
+    let maxGap = -Infinity;
+    let minGap = Infinity;
+    let sounds = 0;
+    for (let step = 0; step < 120; step += 1) {
+      w.setPointer(true, Math.min(200 + step * 5, 300 - 32 + 20), 200);
+      const { impacts } = w.step(DT);
+      sounds += impacts.filter((impact) => impact.kind === 'ball-particle').length;
+      if (step >= 30) {
+        const { particles, controlBall } = w.snapshot();
+        const gap = Math.hypot(particles[0].x - controlBall.x, particles[0].y - controlBall.y) - 32;
+        maxGap = Math.max(maxGap, gap);
+        minGap = Math.min(minGap, gap);
+      }
+    }
+    return { maxGap, minGap, sounds };
+  });
+  const [surface, sink] = results;
+  assert.ok(surface.maxGap < 1 && surface.minGap > -1, JSON.stringify(results));
+  assert.equal(surface.sounds, 1, JSON.stringify(results));
+  // The comparison switch still shows the old behaviour.
+  assert.ok(sink.maxGap - sink.minGap > 5, JSON.stringify(results));
+});
+
 test('a particle skimming past the Ball is not hit', () => {
   const store = new OverlapParticles(1);
   store.set(0, 1000 - 200, 1000 - 60, 6000, 0);
@@ -192,11 +296,13 @@ test('the trial engine matches Rapier for a wall rebound', () => {
 });
 
 test('an off-center hit with friction matches Rapier in speed and spin', () => {
-  const results = ['rapier', 'js'].map((engine) => {
+  const configs = [['rapier', 'sink'], ['js', 'sink'], ['js', 'surface']];
+  const results = configs.map(([engine, overlapBallContact]) => {
     const w = new DotpingPhysicsWorld(RAPIER, 4000, 4000, {
       ...DEFAULT_SETTINGS,
       collisionMode: 'independence-overlapping',
       overlapEngine: engine,
+      overlapBallContact,
       particleCount: 1,
       contactRestitution: 0.3,
       particleFriction: 0.5,
@@ -219,13 +325,19 @@ test('an off-center hit with friction matches Rapier in speed and spin', () => {
   });
   // Rapier's soft solver overshoots rolling a little; the trial engine stops
   // at it exactly. Measured 2026-11-19: speed within 26 px/s of 430, spin
-  // within 5%, Ball spin within 25%.
-  const [rapier, js] = results;
+  // within 5%, Ball spin within 25%. That is the old contact (`sink`), which
+  // lets the Ball move into the particle as Rapier does. `surface` meets the
+  // particle at the impact, so the contact normal differs a little:
+  // measured 2026-11-22, speed within 25 px/s, spin 10.6% lower.
+  const [rapier, ...trials] = results;
   const near = (a, b, tolerance) => Math.abs(a - b) <= tolerance;
-  assert.ok(near(rapier.vx, js.vx, 40) && near(rapier.vy, js.vy, 40), JSON.stringify(results));
-  assert.ok(near(rapier.spin, js.spin, Math.abs(rapier.spin) * 0.1), JSON.stringify(results));
-  assert.ok(Math.sign(rapier.ballSpin) === Math.sign(js.ballSpin), JSON.stringify(results));
-  assert.ok(near(rapier.ballSpin, js.ballSpin, Math.abs(rapier.ballSpin) * 0.35), JSON.stringify(results));
+  trials.forEach((js, index) => {
+    const spinTolerance = index === 0 ? 0.1 : 0.15;
+    assert.ok(near(rapier.vx, js.vx, 40) && near(rapier.vy, js.vy, 40), JSON.stringify(results));
+    assert.ok(near(rapier.spin, js.spin, Math.abs(rapier.spin) * spinTolerance), JSON.stringify(results));
+    assert.ok(Math.sign(rapier.ballSpin) === Math.sign(js.ballSpin), JSON.stringify(results));
+    assert.ok(near(rapier.ballSpin, js.ballSpin, Math.abs(rapier.ballSpin) * 0.35), JSON.stringify(results));
+  });
 });
 
 test('the dragged Ball pushes trial particles out of its way', () => {

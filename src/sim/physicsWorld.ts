@@ -35,7 +35,13 @@ import {
   physicalEntryBudget,
   physicalTimeLimitMs,
 } from './physicalEntry';
-import type { ColliderLayout, CollisionMode, DotpingSettings, OverlapEngine } from './settings';
+import type {
+  ColliderLayout,
+  CollisionMode,
+  DotpingSettings,
+  OverlapBallContact,
+  OverlapEngine,
+} from './settings';
 
 type RapierModule = any;
 
@@ -88,6 +94,8 @@ export type StepMetrics = {
   // Engine that moved the particles this step (`js` only with `?ov=js` in
   // `Independent overlap`).
   overlapEngine?: OverlapEngine;
+  // How the TS overlap engine meets a dot (`?bc=`); set with `js` only.
+  overlapBallContact?: OverlapBallContact;
   // `Physical collision` entry (see `physicalEntry.ts`): set while a packed
   // crowd is spread, or while dots rest.
   physicalEntry?: PhysicalEntryState;
@@ -141,6 +149,8 @@ const FLASH_SPIRAL_RADIAL_STEP_SCALE = 0.42;
 const CONTROL_GRAVITY_STRENGTH = 32_000_000;
 const CONTROL_GRAVITY_MAX_ACCEL = 3_600;
 const PARTICLE_CONTAINMENT_EPSILON = 0.25;
+// Rapier 0.14's default solver substeps per step.
+const RAPIER_SUBSTEPS = 4;
 
 function groups(membership: number, filter: number) {
   return (membership << 16) | filter;
@@ -258,6 +268,11 @@ export class DotpingPhysicsWorld {
 
   get overlapEngine(): OverlapEngine {
     return this.overlap ? 'js' : 'rapier';
+  }
+
+  // Set only while the TS overlap engine runs.
+  get overlapBallContact(): OverlapBallContact | undefined {
+    return this.overlap ? this.settings.overlapBallContact : undefined;
   }
 
   get physicalEntry(): PhysicalEntryState | null {
@@ -462,7 +477,16 @@ export class DotpingPhysicsWorld {
 
     const startedAt = performance.now();
     const overlap = this.overlap;
-    if (overlap) {
+    const ballEnd = overlap && this.settings.overlapBallContact === 'impact'
+      ? overlap.walkBall(dt, this.dampedOverlapBall(dt), this.overlapParams())
+      : null;
+    if (ballEnd) {
+      // The walk has done the Ball's whole step, walls included; Rapier only
+      // turns it by its spin.
+      this.controlBall.setTranslation({ x: ballEnd.x, y: ballEnd.y }, true);
+      this.controlBall.setLinvel({ x: 0, y: 0 }, true);
+      this.controlBall.setAngvel(ballEnd.angvel, true);
+    } else if (overlap && this.settings.overlapBallContact !== 'impact') {
       const ballVelocity = overlap.solveBall(dt, this.overlapBall(), this.overlapParams());
       if (ballVelocity) {
         this.controlBall.setLinvel({ x: ballVelocity.vx, y: ballVelocity.vy }, true);
@@ -477,6 +501,12 @@ export class DotpingPhysicsWorld {
       }
     }
     this.world.step(this.eventQueue);
+    if (ballEnd) {
+      const damping = this.settings.controlBallLinearDamping;
+      const rest = (1 + (dt * damping) / RAPIER_SUBSTEPS) / (1 + dt * damping);
+      this.controlBall.setTranslation({ x: ballEnd.x, y: ballEnd.y }, true);
+      this.controlBall.setLinvel({ x: ballEnd.vx * rest, y: ballEnd.vy * rest }, true);
+    }
     const overlapImpacts: OverlapImpact[] = [];
     if (overlap) {
       overlap.integrate(dt, this.overlapBall(), this.overlapParams(), overlapImpacts);
@@ -484,7 +514,12 @@ export class DotpingPhysicsWorld {
     const endedAt = performance.now();
     this.containControlBall();
     this.containParticles();
-    const impacts = this.collectImpacts();
+    const impacts = this.collectImpacts(ballEnd !== null);
+    if (ballEnd) {
+      for (const energy of ballEnd.wallHits) {
+        overlapImpacts.push({ kind: 'ball-wall', energy });
+      }
+    }
     for (const impact of overlapImpacts) {
       if (impact.energy > 12) {
         impacts.push(impact);
@@ -507,6 +542,7 @@ export class DotpingPhysicsWorld {
         colliderLayout: this.settings.colliderLayout,
         colliderCount: this.colliderCount,
         overlapEngine: overlap ? 'js' : 'rapier',
+        ...(overlap ? { overlapBallContact: this.settings.overlapBallContact } : {}),
         ...(entry ? { physicalEntry: entry } : {}),
         ...(this.restingParticleCount > 0 ? { restingDots: this.restingParticleCount } : {}),
         ...(this.legacyEntry ? { physicalEntryMode: 'held' as const } : {}),
@@ -798,7 +834,21 @@ export class DotpingPhysicsWorld {
       mass: this.settings.controlBallMass,
       friction: this.settings.controlBallFriction,
       angvel: this.controlBall.angvel(),
+      held: this.pointerActive,
     };
+  }
+
+  // The Ball at its moving speed in this step. Rapier damps a body once per
+  // step, and the first of its solver substeps already counts for the motion;
+  // this also is why a damped Ball trails the pointer.
+  private dampedOverlapBall(dt: number): OverlapBall | null {
+    const ball = this.overlapBall();
+    if (ball) {
+      const damping = 1 / (1 + (dt * this.settings.controlBallLinearDamping) / RAPIER_SUBSTEPS);
+      ball.vx *= damping;
+      ball.vy *= damping;
+    }
+    return ball;
   }
 
   private overlapParams(): OverlapParams {
@@ -811,6 +861,7 @@ export class DotpingPhysicsWorld {
       restitution: this.material().contactRestitution,
       wallRestitution: this.settings.wallRestitution,
       linearDamping: this.settings.particleLinearDamping,
+      ballContact: this.settings.overlapBallContact,
     };
   }
 
@@ -1585,7 +1636,8 @@ export class DotpingPhysicsWorld {
     );
   }
 
-  private collectImpacts() {
+  // `ballWalked`: the Ball's wall hits come from the walk (`?bc=impact`).
+  private collectImpacts(ballWalked = false) {
     const impacts: ImpactEvent[] = [];
     this.eventQueue.drainCollisionEvents(
       (handleA: number, handleB: number, started: boolean) => {
@@ -1600,7 +1652,7 @@ export class DotpingPhysicsWorld {
         }
 
         const kind = this.impactKind(roleA, roleB);
-        if (!kind) {
+        if (!kind || (kind === 'ball-wall' && ballWalked)) {
           return;
         }
 

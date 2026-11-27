@@ -5,6 +5,8 @@ import {
   DEFAULT_DEBUG_PROFILE,
   createAudioDebugLines,
   createPerfDebugLines,
+  perfHistoryLine,
+  PERF_HISTORY_LIMIT,
   createPhysicsDebugLines,
   debugProfileFromLocation,
   debugProfileFromParams,
@@ -174,6 +176,8 @@ test('audio debug lines keep current diagnostic keys and n/a number formatting',
 
   assert.ok(!lines.some((line) => line.startsWith('overlap_engine=')));
   assert.ok(createAudioDebugLines(diagnostics, 'audio', 1 / 60, 'js').includes('overlap_engine=js'));
+  assert.ok(!lines.some((line) => line.startsWith('ball_contact=')));
+  assert.ok(createAudioDebugLines(diagnostics, 'audio', 1 / 60, 'js', 'sink').includes('ball_contact=sink'));
 
   assert.equal(lines[0], 'dotping_debug');
   assert.equal(lines[1], 'debug_profile=audio');
@@ -236,6 +240,17 @@ test('perf debug lines report collecting state before the first window closes', 
   assert.ok(lines.includes('viewport=390x844'));
   assert.ok(lines.includes('dpr=1.5 resolution=1.5'));
   assert.ok(lines.includes('particle_renderer=graphics'));
+});
+
+test('the perf overlay shows the dot Rays fill only while dot Rays are on', () => {
+  const off = createPerfDebugLines({ ...PERF_SCENE, summary: null, rayFill: null });
+  assert.ok(!off.some((line) => line.startsWith('rays=')));
+  const on = createPerfDebugLines({
+    ...PERF_SCENE,
+    summary: null,
+    rayFill: { drawing: 'mesh', drawn: 12_340_000, square: 40_120_000 },
+  });
+  assert.ok(on.includes('rays=mesh fill_mpx=12.3 square_mpx=40.1'));
 });
 
 test('the overlay shows the Physical collision entry only while it applies', () => {
@@ -303,4 +318,23 @@ test('perf debug lines name the bench scene and how long it has run', () => {
     bench: { id: 'C', modified: true, elapsedSeconds: 1 },
   });
   assert.ok(modified.includes('bench=C (modified)'));
+});
+
+test('perf history lines carry the window numbers and the ray fill', () => {
+  const phases = Object.fromEntries(
+    ['interval', 'tick', 'preStep', 'worldStep', 'postStep', 'snapshot', 'build', 'pixiRender', 'audio']
+      .map((key, index) => [key, { avg: index + 0.25, p95: 0, max: 0 }]),
+  );
+  const summary = { windowMs: 2000, frames: 100, fps: 50.94, framesOver20Ms: 0, framesOver33Ms: 0, stepsAvg: 1.184, stepsMax: 2, phases };
+  assert.equal(
+    perfHistoryLine(12.4, summary, 10000, { drawn: 15_640_000 }),
+    't=12 fps=50.9 interval=0.3 tick=1.3 render=7.3 steps=1.18 dots=10000 ray_mpx=15.6',
+  );
+  assert.equal(perfHistoryLine(12.4, summary, 10000, null), 't=12 fps=50.9 interval=0.3 tick=1.3 render=7.3 steps=1.18 dots=10000');
+  assert.ok(PERF_HISTORY_LIMIT >= 300);
+});
+
+test('the perf overlay says whether the canvas is multisampled', () => {
+  assert.ok(createPerfDebugLines({ ...PERF_SCENE, summary: null, antialias: false }).includes('antialias=off'));
+  assert.ok(!createPerfDebugLines({ ...PERF_SCENE, summary: null }).some((line) => line.startsWith('antialias=')));
 });

@@ -38,6 +38,7 @@ import type {
   ParticleGlowMode,
   ParticlePalette,
   ParticleRenderer,
+  RayDrawing,
 } from '../sim/settings';
 import { paletteColor, speedColor, speedColorToward, vividGlowColor } from './particleColors';
 import { SpriteParticleLayer } from './spriteParticleLayer';
@@ -164,6 +165,8 @@ export class PixiRenderer {
   constructor(
     private readonly root: HTMLElement,
     readonly particleRenderer: ParticleRenderer = 'sprite',
+    readonly rayDrawing: RayDrawing = 'mesh',
+    readonly antialias = false,
   ) {}
 
   get rendererName() {
@@ -210,7 +213,7 @@ export class PixiRenderer {
     await this.app.init({
       resizeTo: window,
       background: '#05070b',
-      antialias: true,
+      antialias: this.antialias,
       resolution: Math.min(window.devicePixelRatio || 1, 2),
       autoDensity: true,
       powerPreference: 'high-performance',
@@ -234,7 +237,7 @@ export class PixiRenderer {
     this.ballAfterglow.erasers.addChild(this.ballFootprint);
     this.afterglow.erasers.addChild(this.ballFootprintOverDots);
     if (this.particleRenderer === 'sprite') {
-      this.spriteParticles = new SpriteParticleLayer(this.particleRimWidthPercent);
+      this.spriteParticles = new SpriteParticleLayer(this.particleRimWidthPercent, this.rayDrawing);
       this.afterglow.prestamps.addChild(this.spriteParticles.prestamps);
       this.afterglow.stamps.addChild(this.spriteParticles.stamps);
       this.afterglow.erasers.addChild(this.spriteParticles.erasers);
@@ -274,6 +277,13 @@ export class PixiRenderer {
 
   // Afterglow buffer state for the debug overlay: off, or the format and
   // which cards' buffers run.
+  // Dot Rays drawing and its fill in device pixels this frame, or null while
+  // dot Rays are off.
+  get rayFillState() {
+    const fill = this.spriteParticles?.rayFill;
+    return fill ? { drawing: this.rayDrawing, ...fill } : null;
+  }
+
   get afterglowState() {
     const on = [
       this.afterglow?.view.visible ? 'dots' : '',
@@ -487,6 +497,7 @@ export class PixiRenderer {
     const brightness = this.particleBrightnessResponse;
     const glowTargets = brightness > 0 ? this.ensureParticleGlowTargets(count) : null;
     const leaderVisible = this.particleLeaderVisible && count > 0;
+    layer.setPixelScale(this.app.stage.scale.x * this.app.renderer.resolution);
     layer.setCount(count);
 
     for (let index = 0; index < count; index += 1) {
